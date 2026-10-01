@@ -1,0 +1,11 @@
+{
+  "name": "Ninja Green — Follow-up inteligente",
+  "short_name": "Ninja Green",
+  "description": "Organize contatos e mantenha cada oportunidade em movimento.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f3f6f4",
+  "theme_color": "#063d2e",
+  "orientation": "portrait-primary",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
