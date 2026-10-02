@@ -31,6 +31,11 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 !.env.example
+/env/*.env
+/env/*.local
+/env/*.secret
+!/env/*.example
+!/env/README.md
 
 # vercel
 .vercel
@@ -39,6 +44,8 @@ yarn-error.log*
 next-env.d.ts
 /dist/
 /.wrangler/
+/.turbo/
+*.tsbuildinfo
 # Checkout-local execution profile and tool state; never publish them.
 /.sites-runtime/
 /.agents/

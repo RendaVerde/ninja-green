@@ -3,8 +3,8 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   ArrowDown, ArrowUp, Bell, CalendarClock, Check, ChevronRight, CircleHelp, Clock3, Copy, LayoutDashboard,
-  Leaf, ListChecks, MessageCircle, MoreHorizontal, Plus, Search, Send, Settings,
-  Sparkles, Target, Trash2, TrendingUp, UserRound, UsersRound, Zap,
+  Leaf, ListChecks, LogOut, MessageCircle, MoreHorizontal, Plus, Search, Send, Settings,
+  Sparkles, Target, Trash2, TrendingUp, UserCog, UserRound, UsersRound, Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -39,7 +39,13 @@ function Status({ value }: { value: LeadStatus }) {
   return <Badge variant="outline" className={`rounded-full px-2.5 py-1 font-medium ${statusStyle[value]}`}>{value}</Badge>;
 }
 
-export function NinjaGreenApp() {
+type NinjaGreenAppProps = {
+  currentUser: { name: string; email: string };
+  isAdmin: boolean;
+  authEnabled: boolean;
+};
+
+export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenAppProps) {
   const [view, setView] = useState<View>("inicio");
   const [leads, setLeads] = useState<Lead[]>(initialLeads);
   const [selected, setSelected] = useState<Lead | null>(null);
@@ -51,6 +57,8 @@ export function NinjaGreenApp() {
   const [sequenceAudience, setSequenceAudience] = useState("Todos os contatos");
   const [pauseOnReply, setPauseOnReply] = useState(true);
   const [sequenceReady, setSequenceReady] = useState(false);
+  const initials = currentUser.name.split(" ").slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+  const firstName = currentUser.name.split(" ")[0];
 
   useEffect(() => {
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => undefined);
@@ -99,6 +107,12 @@ export function NinjaGreenApp() {
     toast.success("Contato cadastrado", { description: "A cadência de boas-vindas foi associada." });
   }
 
+  async function signOut() {
+    if (!authEnabled) return toast.info("O login será ativado quando o Supabase for configurado.");
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.assign("/login");
+  }
+
   return (
     <div className="min-h-screen bg-[#f3f6f4] text-[#15372d]">
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-[236px] flex-col bg-[#063d2e] px-4 py-6 lg:flex">
@@ -107,32 +121,33 @@ export function NinjaGreenApp() {
           <Nav icon={LayoutDashboard} label="Visão geral" active={view === "inicio"} onClick={() => setView("inicio")} />
           <Nav icon={UsersRound} label="Contatos" active={view === "contatos"} onClick={() => setView("contatos")} count={leads.length} />
           <Nav icon={ListChecks} label="Sequências" active={view === "sequencias"} onClick={() => setView("sequencias")} />
+          {isAdmin && <a href="/admin" className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium text-emerald-50/65 transition hover:bg-white/[.06] hover:text-white"><UserCog className="size-[18px]" /><span>Usuários</span><Badge className="ml-auto bg-[#b7e64a] text-[#15372d] hover:bg-[#b7e64a]">Web</Badge></a>}
         </nav>
         <div className="mt-auto rounded-2xl border border-white/10 bg-white/[.06] p-4 text-white">
           <div className="mb-3 flex items-center gap-2 text-sm font-semibold"><Zap className="size-4 text-[#b7e64a]" />Modo demonstração</div>
           <p className="text-xs leading-5 text-emerald-50/65">Cadastre e teste o fluxo. A conexão com WhatsApp será ativada no próximo passo.</p>
         </div>
-        <button className="mt-4 flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-emerald-50/70 hover:bg-white/[.06]"><Settings className="size-4" />Configurações</button>
+        <div className="mt-4 flex items-center gap-3 rounded-xl bg-white/[.05] p-2.5 text-white"><span className="grid size-9 shrink-0 place-items-center rounded-full bg-[#b7e64a] text-xs font-bold text-[#063d2e]">{initials}</span><div className="min-w-0 flex-1"><p className="truncate text-xs font-bold">{currentUser.name}</p><p className="truncate text-[11px] text-emerald-50/50">{currentUser.email}</p></div>{authEnabled && <button onClick={signOut} aria-label="Sair" className="rounded-lg p-2 text-emerald-50/60 hover:bg-white/10 hover:text-white"><LogOut className="size-4" /></button>}</div>
       </aside>
 
       <main className="min-h-screen pb-24 lg:ml-[236px] lg:pb-8">
         <header className="sticky top-0 z-20 flex h-[68px] items-center justify-between border-b border-[#dfe8e2] bg-[#f3f6f4]/90 px-4 backdrop-blur-xl sm:px-7 lg:px-10">
           <div className="lg:hidden"><Logo compact /></div>
-          <div className="hidden lg:block"><span className="text-sm text-[#6d7f77]">Quinta-feira, 1 de outubro</span></div>
+          <div className="hidden lg:block"><span className="text-sm text-[#6d7f77]">Ninja Green · sua operação comercial</span></div>
           <div className="ml-auto flex items-center gap-2">
             <Button variant="ghost" size="icon" className="rounded-full text-[#4f675d]"><Bell className="size-5" /></Button>
-            <div className="ml-1 flex items-center gap-2 rounded-full bg-white p-1 pr-3 shadow-sm"><span className="grid size-8 place-items-center rounded-full bg-[#0b553f] text-xs font-bold text-white">RA</span><span className="hidden text-sm font-semibold sm:block">Rafael</span></div>
+            <div className="ml-1 flex items-center gap-2 rounded-full bg-white p-1 pr-3 shadow-sm"><span className="grid size-8 place-items-center rounded-full bg-[#0b553f] text-xs font-bold text-white">{initials}</span><span className="hidden text-sm font-semibold sm:block">{firstName}</span></div>
           </div>
         </header>
 
         <div className="mx-auto max-w-[1280px] px-4 py-6 sm:px-7 lg:px-10 lg:py-9">
-          {view === "inicio" && <Dashboard leads={leads} onAdd={() => setAddOpen(true)} onSelect={setSelected} onSend={sendMessage} onViewContacts={() => setView("contatos")} />}
+          {view === "inicio" && <Dashboard leads={leads} userName={firstName} onAdd={() => setAddOpen(true)} onSelect={setSelected} onSend={sendMessage} onViewContacts={() => setView("contatos")} />}
           {view === "contatos" && <Contacts leads={visibleLeads} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} onAdd={() => setAddOpen(true)} onSelect={setSelected} />}
           {view === "sequencias" && <Sequences steps={sequence} setSteps={setSequence} name={sequenceName} setName={setSequenceName} audience={sequenceAudience} setAudience={setSequenceAudience} pauseOnReply={pauseOnReply} setPauseOnReply={setPauseOnReply} />}
         </div>
       </main>
 
-      <MobileNav view={view} setView={setView} onAdd={() => setAddOpen(true)} />
+      <MobileNav view={view} setView={setView} onAdd={() => setAddOpen(true)} authEnabled={authEnabled} onSignOut={signOut} />
       <AddLeadDialog open={addOpen} setOpen={setAddOpen} onAdd={addLead} />
       <LeadSheet lead={selected} onClose={() => setSelected(null)} onSend={sendMessage} />
       <Toaster richColors position="top-center" />
@@ -144,13 +159,13 @@ function Nav({ icon: Icon, label, active, onClick, count }: { icon: typeof Layou
   return <button onClick={onClick} className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-medium transition ${active ? "bg-white/10 text-white" : "text-emerald-50/65 hover:bg-white/[.06] hover:text-white"}`}><Icon className={`size-[18px] ${active ? "text-[#b7e64a]" : ""}`} /><span>{label}</span>{count !== undefined && <span className="ml-auto rounded-full bg-white/10 px-2 py-0.5 text-[11px]">{count}</span>}</button>;
 }
 
-function MobileNav({ view, setView, onAdd }: { view: View; setView: (v: View) => void; onAdd: () => void }) {
+function MobileNav({ view, setView, onAdd, authEnabled, onSignOut }: { view: View; setView: (v: View) => void; onAdd: () => void; authEnabled: boolean; onSignOut: () => void }) {
   return <nav className="fixed inset-x-0 bottom-0 z-30 grid h-[74px] grid-cols-5 items-center border-t border-[#dbe6df] bg-white/95 px-2 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_30px_rgba(20,55,45,.08)] backdrop-blur-xl lg:hidden">
     <MobileItem icon={LayoutDashboard} label="Início" active={view === "inicio"} onClick={() => setView("inicio")} />
     <MobileItem icon={UsersRound} label="Contatos" active={view === "contatos"} onClick={() => setView("contatos")} />
     <button onClick={onAdd} aria-label="Novo contato" className="mx-auto grid size-12 -translate-y-3 place-items-center rounded-2xl bg-[#93c83e] text-[#063d2e] shadow-[0_10px_24px_rgba(79,126,25,.28)]"><Plus className="size-6" /></button>
     <MobileItem icon={ListChecks} label="Cadência" active={view === "sequencias"} onClick={() => setView("sequencias")} />
-    <MobileItem icon={Settings} label="Ajustes" active={false} onClick={() => toast.info("Configurações entram na próxima etapa.")} />
+    <MobileItem icon={authEnabled ? LogOut : Settings} label={authEnabled ? "Sair" : "Ajustes"} active={false} onClick={authEnabled ? onSignOut : () => toast.info("Configurações entram na próxima etapa.")} />
   </nav>;
 }
 
@@ -158,10 +173,10 @@ function MobileItem({ icon: Icon, label, active, onClick }: { icon: typeof Layou
   return <button onClick={onClick} className={`flex flex-col items-center gap-1 text-[10px] font-medium ${active ? "text-[#0b553f]" : "text-[#7a8b84]"}`}><Icon className="size-5" />{label}</button>;
 }
 
-function Dashboard({ leads, onAdd, onSelect, onSend, onViewContacts }: { leads: Lead[]; onAdd: () => void; onSelect: (l: Lead) => void; onSend: (l: Lead) => void; onViewContacts: () => void }) {
+function Dashboard({ leads, userName, onAdd, onSelect, onSend, onViewContacts }: { leads: Lead[]; userName: string; onAdd: () => void; onSelect: (l: Lead) => void; onSend: (l: Lead) => void; onViewContacts: () => void }) {
   return <>
     <section className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
-      <div><p className="mb-1 flex items-center gap-2 text-sm font-semibold text-[#6f8179]"><Sparkles className="size-4 text-[#7da62d]" />Seu dia comercial</p><h1 className="text-3xl font-bold tracking-[-.04em] text-[#123c2f] sm:text-4xl">Bom dia, Rafael.</h1><p className="mt-2 text-sm text-[#6d7f77] sm:text-base">Você tem <strong className="text-[#0b553f]">3 oportunidades</strong> pedindo atenção hoje.</p></div>
+      <div><p className="mb-1 flex items-center gap-2 text-sm font-semibold text-[#6f8179]"><Sparkles className="size-4 text-[#7da62d]" />Seu dia comercial</p><h1 className="text-3xl font-bold tracking-[-.04em] text-[#123c2f] sm:text-4xl">Olá, {userName}.</h1><p className="mt-2 text-sm text-[#6d7f77] sm:text-base">Você tem <strong className="text-[#0b553f]">3 oportunidades</strong> pedindo atenção hoje.</p></div>
       <Button onClick={onAdd} className="h-12 rounded-xl bg-[#0b553f] px-5 text-white shadow-[0_8px_22px_rgba(11,85,63,.2)] hover:bg-[#074632]"><Plus className="mr-2 size-5" />Novo contato</Button>
     </section>
 
