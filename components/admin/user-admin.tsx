@@ -79,7 +79,7 @@ export function UserAdmin({ initialUsers }: { initialUsers: AdminUser[] }) {
               <div><h2 className="font-bold">Convidar usuário</h2><p className="text-xs text-[#788980]">Disponível somente na administração web.</p></div>
             </div>
             <form onSubmit={submit} className="mt-6 space-y-4">
-              <Field label="Nome completo"><Input name="fullName" required placeholder="Nome do usuário" /></Field>
+              <Field label="Nome de Perfil"><Input name="fullName" required placeholder="Nome exibido no aplicativo" /></Field>
               <Field label="E-mail"><Input name="email" type="email" required placeholder="usuario@empresa.com" /></Field>
               <Field label="Tipo de acesso">
                 <select name="role" className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm">

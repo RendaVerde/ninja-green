@@ -16,9 +16,11 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Toaster } from "@/components/ui/sonner";
+import { ProfileDialog, UserProfile } from "@/components/profile-dialog";
+import { WhatsAppConnections } from "@/components/whatsapp-connections";
 import { defaultSequence, Lead, LeadKind, LeadStatus, SequenceStep } from "@/lib/demo-data";
 
-type View = "inicio" | "contatos" | "sequencias";
+type View = "inicio" | "contatos" | "sequencias" | "conexoes";
 type AppNotification = { id: string; title: string; detail: string; leadId?: string; urgent?: boolean };
 type AppDataPayload = {
   error?: string;
@@ -60,6 +62,8 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
   const [selected, setSelected] = useState<Lead | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profile, setProfile] = useState<UserProfile>(currentUser);
   const [messageLead, setMessageLead] = useState<Lead | null>(null);
   const [messageBody, setMessageBody] = useState("");
   const [search, setSearch] = useState("");
@@ -72,8 +76,8 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
   const [dataLoading, setDataLoading] = useState(authEnabled);
   const [sequenceSaving, setSequenceSaving] = useState(false);
   const [currentTime, setCurrentTime] = useState<number | null>(null);
-  const initials = currentUser.name.split(" ").slice(0, 2).map((part) => part[0]).join("").toUpperCase();
-  const firstName = currentUser.name.split(" ")[0];
+  const initials = profile.name.split(" ").slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+  const firstName = profile.name.split(" ")[0];
 
   useEffect(() => {
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => undefined);
@@ -213,13 +217,14 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
           <Nav icon={LayoutDashboard} label="Visão geral" active={view === "inicio"} onClick={() => setView("inicio")} />
           <Nav icon={UsersRound} label="Contatos" active={view === "contatos"} onClick={() => setView("contatos")} count={leads.length} />
           <Nav icon={ListChecks} label="Sequências" active={view === "sequencias"} onClick={() => setView("sequencias")} />
-          {isAdmin && <a href="/admin" className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium text-emerald-50/65 transition hover:bg-white/[.06] hover:text-white"><UserCog className="size-[18px]" /><span>Usuários</span><Badge className="ml-auto bg-[#b7e64a] text-[#15372d] hover:bg-[#b7e64a]">Web</Badge></a>}
+          <Nav icon={MessageCircle} label="Conexões" active={view === "conexoes"} onClick={() => setView("conexoes")} />
+          {isAdmin && <button onClick={() => router.push("/admin")} className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium text-emerald-50/65 transition hover:bg-white/[.06] hover:text-white"><UserCog className="size-[18px]" /><span>Usuários</span><Badge className="ml-auto bg-[#b7e64a] text-[#15372d] hover:bg-[#b7e64a]">Web</Badge></button>}
         </nav>
         <div className="mt-auto rounded-2xl border border-white/10 bg-white/[.06] p-4 text-white">
           <div className="mb-3 flex items-center gap-2 text-sm font-semibold"><Zap className="size-4 text-[#b7e64a]" />Operação conectada</div>
           <p className="text-xs leading-5 text-emerald-50/65">Contatos, cadências e atividades são salvos com segurança na sua conta.</p>
         </div>
-        <div className="mt-4 flex items-center gap-3 rounded-xl bg-white/[.05] p-2.5 text-white"><span className="grid size-9 shrink-0 place-items-center rounded-full bg-[#b7e64a] text-xs font-bold text-[#063d2e]">{initials}</span><div className="min-w-0 flex-1"><p className="truncate text-xs font-bold">{currentUser.name}</p><p className="truncate text-[11px] text-emerald-50/50">{currentUser.email}</p></div>{authEnabled && <button onClick={signOut} aria-label="Sair" className="rounded-lg p-2 text-emerald-50/60 hover:bg-white/10 hover:text-white"><LogOut className="size-4" /></button>}</div>
+        <div className="mt-4 flex items-center gap-2 rounded-xl bg-white/[.05] p-2.5 text-white"><button onClick={() => setProfileOpen(true)} className="flex min-w-0 flex-1 items-center gap-3 text-left"><span className="grid size-9 shrink-0 place-items-center rounded-full bg-[#b7e64a] text-xs font-bold text-[#063d2e]">{initials}</span><span className="min-w-0 flex-1"><span className="block truncate text-xs font-bold">{profile.name}</span><span className="block truncate text-[11px] text-emerald-50/50">{profile.email}</span></span></button>{authEnabled && <button onClick={signOut} aria-label="Sair" className="rounded-lg p-2 text-emerald-50/60 hover:bg-white/10 hover:text-white"><LogOut className="size-4" /></button>}</div>
       </aside>
 
       <main className="min-h-screen pb-24 lg:ml-[236px] lg:pb-8">
@@ -227,8 +232,9 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
           <div className="lg:hidden"><Logo compact /></div>
           <div className="hidden lg:block"><span className="text-sm text-[#6d7f77]">Ninja Green · sua operação comercial</span></div>
           <div className="ml-auto flex items-center gap-2">
+            <Button onClick={() => setView("conexoes")} variant="ghost" size="icon" aria-label="Configurar conexões WhatsApp" className="rounded-full text-[#4f675d]"><Settings className="size-5" /></Button>
             <div className="relative"><Button onClick={() => setNotificationsOpen(true)} variant="ghost" size="icon" aria-label="Abrir notificações" className="rounded-full text-[#4f675d]"><Bell className="size-5" /></Button>{notifications.length > 0 && <span className="absolute right-0 top-0 grid size-4 place-items-center rounded-full bg-red-500 text-[9px] font-bold text-white">{Math.min(notifications.length, 9)}</span>}</div>
-            <div className="ml-1 flex items-center gap-2 rounded-full bg-white p-1 pr-3 shadow-sm"><span className="grid size-8 place-items-center rounded-full bg-[#0b553f] text-xs font-bold text-white">{initials}</span><span className="hidden text-sm font-semibold sm:block">{firstName}</span></div>
+            <button onClick={() => setProfileOpen(true)} aria-label="Editar perfil" className="ml-1 flex items-center gap-2 rounded-full bg-white p-1 pr-3 shadow-sm"><span className="grid size-8 place-items-center rounded-full bg-[#0b553f] text-xs font-bold text-white">{initials}</span><span className="hidden text-sm font-semibold sm:block">{firstName}</span></button>
           </div>
         </header>
 
@@ -236,14 +242,16 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
           {view === "inicio" && <Dashboard leads={leads} loading={dataLoading} currentTime={currentTime} userName={firstName} onAdd={() => setAddOpen(true)} onSelect={setSelected} onSend={sendMessage} onViewContacts={() => setView("contatos")} />}
           {view === "contatos" && <Contacts leads={visibleLeads} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} onAdd={() => setAddOpen(true)} onSelect={setSelected} />}
           {view === "sequencias" && <Sequences steps={sequence} setSteps={setSequence} name={sequenceName} setName={setSequenceName} audience={sequenceAudience} setAudience={setSequenceAudience} pauseOnReply={pauseOnReply} setPauseOnReply={setPauseOnReply} onSave={saveSequence} saving={sequenceSaving} />}
+          {view === "conexoes" && <WhatsAppConnections />}
         </div>
       </main>
 
-      <MobileNav view={view} setView={setView} onAdd={() => setAddOpen(true)} authEnabled={authEnabled} onSignOut={signOut} />
+      <MobileNav view={view} setView={setView} onAdd={() => setAddOpen(true)} onProfile={() => setProfileOpen(true)} />
       <AddLeadDialog open={addOpen} setOpen={setAddOpen} onAdd={addLead} />
       <LeadSheet lead={selected} onClose={() => setSelected(null)} onSend={sendMessage} onStatusChange={updateLeadStatus} onDelete={deleteLead} />
       <NotificationsSheet open={notificationsOpen} onClose={() => setNotificationsOpen(false)} notifications={notifications} onSelect={(item) => { setNotificationsOpen(false); if (item.leadId) setSelected(leads.find((lead) => lead.id === item.leadId) || null); else setAddOpen(true); }} />
       <MessageDialog lead={messageLead} body={messageBody} setBody={setMessageBody} onClose={() => setMessageLead(null)} onConfirm={openWhatsApp} />
+      <ProfileDialog open={profileOpen} onOpenChange={setProfileOpen} profile={profile} onUpdated={setProfile} />
       <Toaster richColors position="top-center" />
     </div>
   );
@@ -253,13 +261,13 @@ function Nav({ icon: Icon, label, active, onClick, count }: { icon: typeof Layou
   return <button onClick={onClick} className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-medium transition ${active ? "bg-white/10 text-white" : "text-emerald-50/65 hover:bg-white/[.06] hover:text-white"}`}><Icon className={`size-[18px] ${active ? "text-[#b7e64a]" : ""}`} /><span>{label}</span>{count !== undefined && <span className="ml-auto rounded-full bg-white/10 px-2 py-0.5 text-[11px]">{count}</span>}</button>;
 }
 
-function MobileNav({ view, setView, onAdd, authEnabled, onSignOut }: { view: View; setView: (v: View) => void; onAdd: () => void; authEnabled: boolean; onSignOut: () => void }) {
+function MobileNav({ view, setView, onAdd, onProfile }: { view: View; setView: (v: View) => void; onAdd: () => void; onProfile: () => void }) {
   return <nav className="fixed inset-x-0 bottom-0 z-30 grid h-[74px] grid-cols-5 items-center border-t border-[#dbe6df] bg-white/95 px-2 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_30px_rgba(20,55,45,.08)] backdrop-blur-xl lg:hidden">
     <MobileItem icon={LayoutDashboard} label="Início" active={view === "inicio"} onClick={() => setView("inicio")} />
     <MobileItem icon={UsersRound} label="Contatos" active={view === "contatos"} onClick={() => setView("contatos")} />
     <button onClick={onAdd} aria-label="Novo contato" className="mx-auto grid size-12 -translate-y-3 place-items-center rounded-2xl bg-[#93c83e] text-[#063d2e] shadow-[0_10px_24px_rgba(79,126,25,.28)]"><Plus className="size-6" /></button>
     <MobileItem icon={ListChecks} label="Cadência" active={view === "sequencias"} onClick={() => setView("sequencias")} />
-    <MobileItem icon={authEnabled ? LogOut : Settings} label={authEnabled ? "Sair" : "Ajustes"} active={false} onClick={authEnabled ? onSignOut : () => toast.info("Configurações entram na próxima etapa.")} />
+    <MobileItem icon={UserRound} label="Perfil" active={false} onClick={onProfile} />
   </nav>;
 }
 

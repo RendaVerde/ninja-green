@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Eye, EyeOff, Leaf, LoaderCircle, LockKeyhole, Mail } from "lucide-react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -64,7 +65,7 @@ export function LoginForm({ configured }: { configured: boolean }) {
           {error && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
           <Button type="submit" disabled={!configured || loading} className="h-12 w-full rounded-xl bg-[#0b553f] text-base hover:bg-[#074632]">{loading ? <><LoaderCircle className="mr-2 size-4 animate-spin" />Entrando…</> : "Entrar"}</Button>
         </form>
-        <p className="mt-8 text-center text-xs leading-5 text-[#82918b]">Não existe cadastro público. Novos acessos são criados pelo administrador na versão web.</p>
+        <p className="mt-8 text-center text-sm text-[#71827a]">Ainda não possui acesso? <Link href="/signup" className="font-bold text-[#0b553f] hover:underline">Criar conta</Link></p>
       </div>
     </section>
   </main>;
