@@ -15,9 +15,10 @@ Abra `http://localhost:3000`. Sem as variáveis do Supabase, o painel continua d
 
 - Cada usuário entra com e-mail e senha e recebe uma sessão individual.
 - O cadastro público fica desabilitado.
-- Administradores acessam `/admin` no computador para criar usuários comuns ou outros administradores.
+- Administradores acessam `/admin` no computador para convidar usuários comuns ou outros administradores.
 - No celular, a área administrativa mostra apenas um aviso e não adiciona controles à navegação do PWA.
-- A criação de usuários acontece no servidor com `SUPABASE_SERVICE_ROLE_KEY`; essa chave nunca é enviada ao navegador.
+- Os convites são enviados no servidor com `SUPABASE_SERVICE_ROLE_KEY`; essa chave nunca é enviada ao navegador.
+- Cada convidado confirma o e-mail e cria a própria senha em `/auth/invite`.
 
 Para ativar:
 
@@ -26,6 +27,7 @@ Para ativar:
 3. Copie `.env.example` para `.env.local` e preencha as chaves.
 4. Defina `ADMIN_EMAILS` com um ou mais e-mails separados por vírgula.
 5. Crie o primeiro usuário no painel Authentication do Supabase; depois os demais podem ser criados em `/admin`.
+6. Em Authentication > URL Configuration, autorize `http://localhost:3000/**` no desenvolvimento e a URL da Vercel em produção.
 
 ## Princípio modular
 

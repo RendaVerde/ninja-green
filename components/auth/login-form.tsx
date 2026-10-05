@@ -1,14 +1,24 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { Eye, EyeOff, Leaf, LoaderCircle, LockKeyhole, Mail } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 export function LoginForm({ configured }: { configured: boolean }) {
+  const router = useRouter();
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    const hash = window.location.hash;
+    const isAuthReturn = hash.includes("access_token=") || hash.includes("error_code=");
+    if (isAuthReturn) {
+      window.location.replace("/auth/invite" + hash);
+    }
+  }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -24,7 +34,8 @@ export function LoginForm({ configured }: { configured: boolean }) {
       });
       const result = await response.json() as { error?: string };
       if (!response.ok) throw new Error(result.error || "Não foi possível entrar.");
-      window.location.assign("/");
+      router.replace("/");
+      router.refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Não foi possível entrar.");
       setLoading(false);
