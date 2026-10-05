@@ -1,8 +1,9 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
-  ArrowDown, ArrowUp, Bell, CalendarClock, Check, ChevronRight, CircleHelp, Clock3, Copy, LayoutDashboard,
+  ArrowDown, ArrowUp, Bell, CalendarClock, Check, ChevronRight, CircleHelp, Clock3, Copy, Inbox, LayoutDashboard, Loader2,
   Leaf, ListChecks, LogOut, MessageCircle, MoreHorizontal, Plus, Search, Send, Settings,
   Sparkles, Target, Trash2, TrendingUp, UserCog, UserRound, UsersRound, Zap,
 } from "lucide-react";
@@ -15,9 +16,16 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Toaster } from "@/components/ui/sonner";
-import { defaultSequence, initialLeads, Lead, LeadKind, LeadStatus, SequenceStep, timelineByLead } from "@/lib/demo-data";
+import { defaultSequence, Lead, LeadKind, LeadStatus, SequenceStep } from "@/lib/demo-data";
 
 type View = "inicio" | "contatos" | "sequencias";
+type AppNotification = { id: string; title: string; detail: string; leadId?: string; urgent?: boolean };
+type AppDataPayload = {
+  error?: string;
+  contacts?: Lead[];
+  sequence?: { id: string; name: string; audience: string; pauseOnReply: boolean; steps: SequenceStep[] } | null;
+};
+type MutationPayload = { error?: string; id?: string };
 
 const statusStyle: Record<LeadStatus, string> = {
   Novo: "bg-blue-50 text-blue-700 border-blue-100",
@@ -46,17 +54,24 @@ type NinjaGreenAppProps = {
 };
 
 export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenAppProps) {
+  const router = useRouter();
   const [view, setView] = useState<View>("inicio");
-  const [leads, setLeads] = useState<Lead[]>(initialLeads);
+  const [leads, setLeads] = useState<Lead[]>([]);
   const [selected, setSelected] = useState<Lead | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [messageLead, setMessageLead] = useState<Lead | null>(null);
+  const [messageBody, setMessageBody] = useState("");
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"Todos" | LeadKind>("Todos");
   const [sequence, setSequence] = useState(defaultSequence);
+  const [sequenceId, setSequenceId] = useState<string | null>(null);
   const [sequenceName, setSequenceName] = useState("Follow-up principal");
   const [sequenceAudience, setSequenceAudience] = useState("Todos os contatos");
   const [pauseOnReply, setPauseOnReply] = useState(true);
-  const [sequenceReady, setSequenceReady] = useState(false);
+  const [dataLoading, setDataLoading] = useState(authEnabled);
+  const [sequenceSaving, setSequenceSaving] = useState(false);
+  const [currentTime, setCurrentTime] = useState<number | null>(null);
   const initials = currentUser.name.split(" ").slice(0, 2).map((part) => part[0]).join("").toUpperCase();
   const firstName = currentUser.name.split(" ")[0];
 
@@ -65,30 +80,42 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
   }, []);
 
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem("ninja-green.sequence.v1");
-      if (saved) {
-        const config = JSON.parse(saved) as { name?: string; audience?: string; pauseOnReply?: boolean; steps?: SequenceStep[] };
-        if (config.name) setSequenceName(config.name);
-        if (config.audience) setSequenceAudience(config.audience);
-        if (typeof config.pauseOnReply === "boolean") setPauseOnReply(config.pauseOnReply);
-        if (Array.isArray(config.steps) && config.steps.length) setSequence(config.steps);
-      }
-    } catch {
-      localStorage.removeItem("ninja-green.sequence.v1");
-    } finally {
-      setSequenceReady(true);
-    }
+    const refreshClock = () => setCurrentTime(Date.now());
+    const initialTimer = window.setTimeout(refreshClock, 0);
+    const interval = window.setInterval(refreshClock, 60_000);
+    return () => { window.clearTimeout(initialTimer); window.clearInterval(interval); };
   }, []);
 
-  useEffect(() => {
-    if (!sequenceReady) return;
-    try {
-      localStorage.setItem("ninja-green.sequence.v1", JSON.stringify({ name: sequenceName, audience: sequenceAudience, pauseOnReply, steps: sequence }));
-    } catch {
-      // A interface continua funcionando mesmo quando o navegador bloqueia armazenamento local.
+  const loadData = useCallback(async () => {
+    if (!authEnabled) {
+      setDataLoading(false);
+      return;
     }
-  }, [sequence, sequenceName, sequenceAudience, pauseOnReply, sequenceReady]);
+    setDataLoading(true);
+    try {
+      const response = await fetch("/api/app-data", { cache: "no-store" });
+      if (response.status === 401) return router.push("/login");
+      const payload = await response.json() as AppDataPayload;
+      if (!response.ok) throw new Error(payload.error || "Falha ao carregar dados.");
+      setLeads(payload.contacts || []);
+      if (payload.sequence) {
+        setSequenceId(payload.sequence.id);
+        setSequenceName(payload.sequence.name);
+        setSequenceAudience(payload.sequence.audience);
+        setPauseOnReply(payload.sequence.pauseOnReply);
+        setSequence(payload.sequence.steps?.length ? payload.sequence.steps : defaultSequence);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível carregar seus dados.");
+    } finally {
+      setDataLoading(false);
+    }
+  }, [authEnabled, router]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadData(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadData]);
 
   const visibleLeads = useMemo(() => leads.filter((lead) => {
     const matchesKind = filter === "Todos" || lead.kind === filter;
@@ -96,21 +123,86 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
     return matchesKind && `${lead.name} ${lead.phone} ${lead.interest}`.toLowerCase().includes(term);
   }), [leads, search, filter]);
 
+  const notifications = useMemo<AppNotification[]>(() => {
+    const items = leads.flatMap((lead) => {
+      const result: AppNotification[] = [];
+      if (currentTime !== null && lead.nextRunAt && new Date(lead.nextRunAt).getTime() <= currentTime) result.push({ id: `due-${lead.id}`, title: `Follow-up com ${lead.name}`, detail: lead.nextContact, leadId: lead.id, urgent: true });
+      if (lead.status === "Respondeu") result.push({ id: `reply-${lead.id}`, title: `${lead.name} respondeu`, detail: "Abra o contato e dê continuidade à conversa.", leadId: lead.id, urgent: true });
+      if (lead.status === "Novo" && !lead.lastContactAt) result.push({ id: `new-${lead.id}`, title: "Primeiro contato pendente", detail: `${lead.name} ainda não recebeu uma abordagem.`, leadId: lead.id });
+      return result;
+    });
+    if (!leads.length && !dataLoading) items.push({ id: "empty", title: "Cadastre seu primeiro contato", detail: "Use o botão Novo contato para iniciar sua operação." });
+    return items;
+  }, [currentTime, dataLoading, leads]);
+
   function sendMessage(lead: Lead) {
-    setLeads((items) => items.map((item) => item.id === lead.id ? { ...item, lastContact: "Agora", nextContact: "Em 3 dias", status: item.status === "Novo" ? "Em contato" : item.status } : item));
-    toast.success(`Mensagem preparada para ${lead.name.split(" ")[0]}`, { description: "Modo demonstração: conecte sua UazAPI para enviar de verdade." });
+    const template = sequence.find((step) => step.enabled)?.message || "Olá, {{nome}}! Tudo bem? Gostaria de conversar sobre {{interesse}}.";
+    setMessageBody(template.replaceAll("{{nome}}", lead.name.split(" ")[0]).replaceAll("{{interesse}}", lead.interest));
+    setMessageLead(lead);
   }
 
-  function addLead(lead: Lead) {
-    setLeads((items) => [lead, ...items]);
+  async function addLead(lead: Lead) {
+    const response = await fetch("/api/contacts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(lead) });
+    const payload = await response.json().catch(() => ({})) as MutationPayload;
+    if (!response.ok) return toast.error(payload.error || "Não foi possível cadastrar o contato.");
     setAddOpen(false);
-    toast.success("Contato cadastrado", { description: "A cadência de boas-vindas foi associada." });
+    toast.success("Contato cadastrado", { description: "Os dados já estão salvos na sua conta." });
+    await loadData();
+  }
+
+  async function saveSequence() {
+    setSequenceSaving(true);
+    try {
+      const response = await fetch("/api/sequences", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: sequenceId, name: sequenceName, audience: sequenceAudience, pauseOnReply, steps: sequence }) });
+      const payload = await response.json().catch(() => ({})) as MutationPayload;
+      if (!response.ok) throw new Error(payload.error || "Não foi possível salvar a cadência.");
+      if (payload.id) setSequenceId(payload.id);
+      toast.success("Cadência salva na sua conta");
+      await loadData();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível salvar a cadência.");
+    } finally {
+      setSequenceSaving(false);
+    }
+  }
+
+  async function updateLeadStatus(lead: Lead, status: LeadStatus) {
+    const response = await fetch(`/api/contacts/${lead.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) });
+    const payload = await response.json().catch(() => ({})) as MutationPayload;
+    if (!response.ok) return toast.error(payload.error || "Não foi possível atualizar o contato.");
+    const updated = { ...lead, status };
+    setSelected(updated);
+    setLeads((items) => items.map((item) => item.id === lead.id ? updated : item));
+    toast.success("Status atualizado");
+  }
+
+  async function deleteLead(lead: Lead) {
+    if (!window.confirm(`Excluir ${lead.name}? Esta ação também remove o histórico associado.`)) return;
+    const response = await fetch(`/api/contacts/${lead.id}`, { method: "DELETE" });
+    const payload = await response.json().catch(() => ({})) as MutationPayload;
+    if (!response.ok) return toast.error(payload.error || "Não foi possível excluir o contato.");
+    setSelected(null);
+    toast.success("Contato excluído");
+    await loadData();
+  }
+
+  async function openWhatsApp() {
+    if (!messageLead || !messageBody.trim()) return;
+    const digits = messageLead.phone.replace(/\D/g, "");
+    const phone = digits.length === 10 || digits.length === 11 ? `55${digits}` : digits;
+    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(messageBody.trim())}`, "_blank", "noopener,noreferrer");
+    const lead = messageLead;
+    setMessageLead(null);
+    const response = await fetch("/api/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contactId: lead.id, body: messageBody.trim() }) });
+    if (!response.ok) toast.warning("O WhatsApp foi aberto, mas o histórico não pôde ser registrado.");
+    else toast.success("WhatsApp aberto", { description: "A atividade foi registrada no histórico." });
+    await loadData();
   }
 
   async function signOut() {
     if (!authEnabled) return toast.info("O login será ativado quando o Supabase for configurado.");
     await fetch("/api/auth/logout", { method: "POST" });
-    window.location.assign("/login");
+    router.push("/login");
   }
 
   return (
@@ -124,8 +216,8 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
           {isAdmin && <a href="/admin" className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium text-emerald-50/65 transition hover:bg-white/[.06] hover:text-white"><UserCog className="size-[18px]" /><span>Usuários</span><Badge className="ml-auto bg-[#b7e64a] text-[#15372d] hover:bg-[#b7e64a]">Web</Badge></a>}
         </nav>
         <div className="mt-auto rounded-2xl border border-white/10 bg-white/[.06] p-4 text-white">
-          <div className="mb-3 flex items-center gap-2 text-sm font-semibold"><Zap className="size-4 text-[#b7e64a]" />Modo demonstração</div>
-          <p className="text-xs leading-5 text-emerald-50/65">Cadastre e teste o fluxo. A conexão com WhatsApp será ativada no próximo passo.</p>
+          <div className="mb-3 flex items-center gap-2 text-sm font-semibold"><Zap className="size-4 text-[#b7e64a]" />Operação conectada</div>
+          <p className="text-xs leading-5 text-emerald-50/65">Contatos, cadências e atividades são salvos com segurança na sua conta.</p>
         </div>
         <div className="mt-4 flex items-center gap-3 rounded-xl bg-white/[.05] p-2.5 text-white"><span className="grid size-9 shrink-0 place-items-center rounded-full bg-[#b7e64a] text-xs font-bold text-[#063d2e]">{initials}</span><div className="min-w-0 flex-1"><p className="truncate text-xs font-bold">{currentUser.name}</p><p className="truncate text-[11px] text-emerald-50/50">{currentUser.email}</p></div>{authEnabled && <button onClick={signOut} aria-label="Sair" className="rounded-lg p-2 text-emerald-50/60 hover:bg-white/10 hover:text-white"><LogOut className="size-4" /></button>}</div>
       </aside>
@@ -135,21 +227,23 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
           <div className="lg:hidden"><Logo compact /></div>
           <div className="hidden lg:block"><span className="text-sm text-[#6d7f77]">Ninja Green · sua operação comercial</span></div>
           <div className="ml-auto flex items-center gap-2">
-            <Button variant="ghost" size="icon" className="rounded-full text-[#4f675d]"><Bell className="size-5" /></Button>
+            <div className="relative"><Button onClick={() => setNotificationsOpen(true)} variant="ghost" size="icon" aria-label="Abrir notificações" className="rounded-full text-[#4f675d]"><Bell className="size-5" /></Button>{notifications.length > 0 && <span className="absolute right-0 top-0 grid size-4 place-items-center rounded-full bg-red-500 text-[9px] font-bold text-white">{Math.min(notifications.length, 9)}</span>}</div>
             <div className="ml-1 flex items-center gap-2 rounded-full bg-white p-1 pr-3 shadow-sm"><span className="grid size-8 place-items-center rounded-full bg-[#0b553f] text-xs font-bold text-white">{initials}</span><span className="hidden text-sm font-semibold sm:block">{firstName}</span></div>
           </div>
         </header>
 
         <div className="mx-auto max-w-[1280px] px-4 py-6 sm:px-7 lg:px-10 lg:py-9">
-          {view === "inicio" && <Dashboard leads={leads} userName={firstName} onAdd={() => setAddOpen(true)} onSelect={setSelected} onSend={sendMessage} onViewContacts={() => setView("contatos")} />}
+          {view === "inicio" && <Dashboard leads={leads} loading={dataLoading} currentTime={currentTime} userName={firstName} onAdd={() => setAddOpen(true)} onSelect={setSelected} onSend={sendMessage} onViewContacts={() => setView("contatos")} />}
           {view === "contatos" && <Contacts leads={visibleLeads} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} onAdd={() => setAddOpen(true)} onSelect={setSelected} />}
-          {view === "sequencias" && <Sequences steps={sequence} setSteps={setSequence} name={sequenceName} setName={setSequenceName} audience={sequenceAudience} setAudience={setSequenceAudience} pauseOnReply={pauseOnReply} setPauseOnReply={setPauseOnReply} />}
+          {view === "sequencias" && <Sequences steps={sequence} setSteps={setSequence} name={sequenceName} setName={setSequenceName} audience={sequenceAudience} setAudience={setSequenceAudience} pauseOnReply={pauseOnReply} setPauseOnReply={setPauseOnReply} onSave={saveSequence} saving={sequenceSaving} />}
         </div>
       </main>
 
       <MobileNav view={view} setView={setView} onAdd={() => setAddOpen(true)} authEnabled={authEnabled} onSignOut={signOut} />
       <AddLeadDialog open={addOpen} setOpen={setAddOpen} onAdd={addLead} />
-      <LeadSheet lead={selected} onClose={() => setSelected(null)} onSend={sendMessage} />
+      <LeadSheet lead={selected} onClose={() => setSelected(null)} onSend={sendMessage} onStatusChange={updateLeadStatus} onDelete={deleteLead} />
+      <NotificationsSheet open={notificationsOpen} onClose={() => setNotificationsOpen(false)} notifications={notifications} onSelect={(item) => { setNotificationsOpen(false); if (item.leadId) setSelected(leads.find((lead) => lead.id === item.leadId) || null); else setAddOpen(true); }} />
+      <MessageDialog lead={messageLead} body={messageBody} setBody={setMessageBody} onClose={() => setMessageLead(null)} onConfirm={openWhatsApp} />
       <Toaster richColors position="top-center" />
     </div>
   );
@@ -173,28 +267,34 @@ function MobileItem({ icon: Icon, label, active, onClick }: { icon: typeof Layou
   return <button onClick={onClick} className={`flex flex-col items-center gap-1 text-[10px] font-medium ${active ? "text-[#0b553f]" : "text-[#7a8b84]"}`}><Icon className="size-5" />{label}</button>;
 }
 
-function Dashboard({ leads, userName, onAdd, onSelect, onSend, onViewContacts }: { leads: Lead[]; userName: string; onAdd: () => void; onSelect: (l: Lead) => void; onSend: (l: Lead) => void; onViewContacts: () => void }) {
+function Dashboard({ leads, loading, currentTime, userName, onAdd, onSelect, onSend, onViewContacts }: { leads: Lead[]; loading: boolean; currentTime: number | null; userName: string; onAdd: () => void; onSelect: (l: Lead) => void; onSend: (l: Lead) => void; onViewContacts: () => void }) {
+  const dueToday = currentTime === null ? 0 : leads.filter((lead) => lead.nextRunAt && new Date(lead.nextRunAt).getTime() <= currentTime).length;
+  const replies = leads.filter((lead) => lead.status === "Respondeu").length;
+  const qualified = leads.filter((lead) => lead.status === "Qualificado").length;
+  const conversion = leads.length ? Math.round((qualified / leads.length) * 100) : 0;
+  const statusCount = (status: LeadStatus) => leads.filter((lead) => lead.status === status).length;
+  const recent = leads.flatMap((lead) => (lead.history || []).map((item) => ({ ...item, name: lead.name }))).slice(0, 2);
   return <>
     <section className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
-      <div><p className="mb-1 flex items-center gap-2 text-sm font-semibold text-[#6f8179]"><Sparkles className="size-4 text-[#7da62d]" />Seu dia comercial</p><h1 className="text-3xl font-bold tracking-[-.04em] text-[#123c2f] sm:text-4xl">Olá, {userName}.</h1><p className="mt-2 text-sm text-[#6d7f77] sm:text-base">Você tem <strong className="text-[#0b553f]">3 oportunidades</strong> pedindo atenção hoje.</p></div>
+      <div><p className="mb-1 flex items-center gap-2 text-sm font-semibold text-[#6f8179]"><Sparkles className="size-4 text-[#7da62d]" />Seu dia comercial</p><h1 className="text-3xl font-bold tracking-[-.04em] text-[#123c2f] sm:text-4xl">Olá, {userName}.</h1><p className="mt-2 text-sm text-[#6d7f77] sm:text-base">Você tem <strong className="text-[#0b553f]">{dueToday} {dueToday === 1 ? "oportunidade" : "oportunidades"}</strong> pedindo atenção agora.</p></div>
       <Button onClick={onAdd} className="h-12 rounded-xl bg-[#0b553f] px-5 text-white shadow-[0_8px_22px_rgba(11,85,63,.2)] hover:bg-[#074632]"><Plus className="mr-2 size-5" />Novo contato</Button>
     </section>
 
     <section className="mt-7 grid grid-cols-2 gap-3 xl:grid-cols-4">
-      <Metric icon={UsersRound} label="Em acompanhamento" value={String(leads.length)} note="2 novos esta semana" />
-      <Metric icon={CalendarClock} label="Follow-ups hoje" value="3" note="1 precisa de resposta" accent />
-      <Metric icon={MessageCircle} label="Respostas" value="7" note="+18% nos últimos 7 dias" />
-      <Metric icon={Target} label="Conversões" value="24%" note="Meta mensal: 30%" />
+      <Metric icon={UsersRound} label="Em acompanhamento" value={String(leads.length)} note="Contatos reais da sua conta" />
+      <Metric icon={CalendarClock} label="Follow-ups pendentes" value={String(dueToday)} note="Agendamentos vencidos ou para hoje" accent />
+      <Metric icon={MessageCircle} label="Respostas" value={String(replies)} note="Contatos marcados como respondidos" />
+      <Metric icon={Target} label="Qualificação" value={`${conversion}%`} note={`${qualified} contatos qualificados`} />
     </section>
 
     <section className="mt-6 grid gap-5 xl:grid-cols-[1.45fr_.85fr]">
       <div className="rounded-2xl border border-[#dfe8e2] bg-white shadow-[0_10px_40px_rgba(18,60,47,.05)]">
         <div className="flex items-center justify-between border-b border-[#e7ede9] p-5 sm:p-6"><div><h2 className="font-bold text-[#173d31]">Prioridades de hoje</h2><p className="mt-1 text-xs text-[#778780]">Contatos ordenados pelo melhor momento de agir</p></div><Button variant="ghost" size="sm" onClick={onViewContacts} className="text-[#0b553f]">Ver todos</Button></div>
-        <div className="divide-y divide-[#edf1ef]">{leads.slice(0, 3).map((lead, index) => <div key={lead.id} className="flex items-center gap-3 p-4 sm:px-6 sm:py-5"><div className="hidden w-5 text-xs font-bold text-[#9baaA3] sm:block">0{index + 1}</div><Avatar name={lead.name} /><button onClick={() => onSelect(lead)} className="min-w-0 flex-1 text-left"><div className="truncate text-sm font-bold text-[#173d31]">{lead.name}</div><div className="mt-1 flex items-center gap-2 text-xs text-[#73847c]"><span>{lead.kind}</span><span>·</span><span className="truncate">{lead.interest}</span></div></button><div className="hidden text-right sm:block"><div className="text-xs font-semibold text-[#173d31]">{lead.nextContact}</div><div className="mt-1"><Status value={lead.status} /></div></div><Button onClick={() => onSend(lead)} size="icon" variant="ghost" aria-label={`Enviar mensagem para ${lead.name}`} className="rounded-full bg-[#eaf4e3] text-[#397138] hover:bg-[#dceecd]"><Send className="size-4" /></Button></div>)}</div>
+        <div className="divide-y divide-[#edf1ef]">{loading && <div className="grid place-items-center py-16 text-[#71827a]"><Loader2 className="mb-3 size-6 animate-spin" /><span className="text-sm">Carregando sua operação…</span></div>}{!loading && leads.slice(0, 3).map((lead, index) => <div key={lead.id} className="flex items-center gap-3 p-4 sm:px-6 sm:py-5"><div className="hidden w-5 text-xs font-bold text-[#9baaA3] sm:block">0{index + 1}</div><Avatar name={lead.name} /><button onClick={() => onSelect(lead)} className="min-w-0 flex-1 text-left"><div className="truncate text-sm font-bold text-[#173d31]">{lead.name}</div><div className="mt-1 flex items-center gap-2 text-xs text-[#73847c]"><span>{lead.kind}</span><span>·</span><span className="truncate">{lead.interest}</span></div></button><div className="hidden text-right sm:block"><div className="text-xs font-semibold text-[#173d31]">{lead.nextContact}</div><div className="mt-1"><Status value={lead.status} /></div></div><Button onClick={() => onSend(lead)} size="icon" variant="ghost" aria-label={`Enviar mensagem para ${lead.name}`} className="rounded-full bg-[#eaf4e3] text-[#397138] hover:bg-[#dceecd]"><Send className="size-4" /></Button></div>)}{!loading && leads.length === 0 && <div className="px-6 py-14 text-center"><Inbox className="mx-auto mb-3 size-8 text-[#9aaaA3]" /><p className="font-semibold">Sua operação começa aqui</p><p className="mt-1 text-sm text-[#75867e]">Cadastre o primeiro contato para alimentar o painel.</p></div>}</div>
       </div>
       <div className="space-y-5">
-        <div className="rounded-2xl bg-[#0a4938] p-6 text-white shadow-[0_14px_34px_rgba(6,61,46,.17)]"><div className="flex items-center justify-between"><div><p className="text-xs font-semibold uppercase tracking-[.14em] text-[#b7e64a]">Pulso do funil</p><h2 className="mt-2 text-xl font-bold">Oportunidades ativas</h2></div><TrendingUp className="size-6 text-[#b7e64a]" /></div><div className="mt-6 space-y-4"><Funnel label="Novos" value={5} width="92%" /><Funnel label="Em contato" value={3} width="68%" /><Funnel label="Qualificados" value={2} width="44%" /></div></div>
-        <div className="rounded-2xl border border-[#dfe8e2] bg-white p-5"><div className="flex items-center justify-between"><h2 className="font-bold">Atividade recente</h2><Clock3 className="size-4 text-[#8a9a93]" /></div><div className="mt-4 space-y-4"><Activity name="Rafael respondeu" detail="interesse em ser licenciado" /><Activity name="Ana recebeu conteúdo" detail="economia na conta de luz" /></div></div>
+        <div className="rounded-2xl bg-[#0a4938] p-6 text-white shadow-[0_14px_34px_rgba(6,61,46,.17)]"><div className="flex items-center justify-between"><div><p className="text-xs font-semibold uppercase tracking-[.14em] text-[#b7e64a]">Pulso do funil</p><h2 className="mt-2 text-xl font-bold">Oportunidades ativas</h2></div><TrendingUp className="size-6 text-[#b7e64a]" /></div><div className="mt-6 space-y-4"><Funnel label="Novos" value={statusCount("Novo")} width={`${leads.length ? Math.max(8, statusCount("Novo") / leads.length * 100) : 0}%`} /><Funnel label="Em contato" value={statusCount("Em contato")} width={`${leads.length ? Math.max(8, statusCount("Em contato") / leads.length * 100) : 0}%`} /><Funnel label="Qualificados" value={qualified} width={`${leads.length ? Math.max(8, qualified / leads.length * 100) : 0}%`} /></div></div>
+        <div className="rounded-2xl border border-[#dfe8e2] bg-white p-5"><div className="flex items-center justify-between"><h2 className="font-bold">Atividade recente</h2><Clock3 className="size-4 text-[#8a9a93]" /></div><div className="mt-4 space-y-4">{recent.map((item) => <Activity key={item.id} name={`${item.name}: ${item.title}`} detail={item.detail} />)}{recent.length === 0 && <p className="py-5 text-center text-xs text-[#7e8d86]">As conversas registradas aparecerão aqui.</p>}</div></div>
       </div>
     </section>
   </>;
@@ -222,9 +322,11 @@ type SequenceProps = {
   setAudience: (audience: string) => void;
   pauseOnReply: boolean;
   setPauseOnReply: (pause: boolean) => void;
+  onSave: () => void;
+  saving: boolean;
 };
 
-function Sequences({ steps, setSteps, name, setName, audience, setAudience, pauseOnReply, setPauseOnReply }: SequenceProps) {
+function Sequences({ steps, setSteps, name, setName, audience, setAudience, pauseOnReply, setPauseOnReply, onSave, saving }: SequenceProps) {
   const updateStep = (id: string, patch: Partial<SequenceStep>) => setSteps(steps.map((step) => step.id === id ? { ...step, ...patch } : step));
   const moveStep = (index: number, direction: -1 | 1) => {
     const target = index + direction;
@@ -259,7 +361,7 @@ function Sequences({ steps, setSteps, name, setName, audience, setAudience, paus
   return <>
     <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
       <div><p className="text-sm font-semibold text-[#789087]">Automação</p><h1 className="mt-1 text-3xl font-bold tracking-[-.035em]">Cadência de follow-up</h1><p className="mt-2 max-w-2xl text-sm text-[#71827a]">Defina livremente quando e como cada contato será retomado.</p></div>
-      <div className="flex items-center gap-2 text-xs font-semibold text-[#5e756a]"><span className="size-2 rounded-full bg-[#84b72e]" />Salvo automaticamente neste dispositivo</div>
+      <Button type="button" onClick={onSave} disabled={saving} className="bg-[#0b553f] hover:bg-[#074632]">{saving ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Check className="mr-2 size-4" />}Salvar cadência</Button>
     </div>
 
     <div className="mt-7 grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
@@ -278,11 +380,11 @@ function Sequences({ steps, setSteps, name, setName, audience, setAudience, paus
         <section className="rounded-2xl border border-[#dfe8e2] bg-white p-5 sm:p-7">
           <div className="mb-6 flex items-center justify-between gap-3"><div><h2 className="font-bold">Etapas da sequência</h2><p className="mt-1 text-xs text-[#7a8b83]">Edite os dias, o objetivo e a ordem de cada contato</p></div><Badge className="rounded-full bg-[#e7f3d2] text-[#436b21] hover:bg-[#e7f3d2]">{steps.filter((step) => step.enabled).length} ativas</Badge></div>
           <div>{steps.map((step, index) => <div key={step.id} className="relative flex gap-3 pb-5 last:pb-0 sm:gap-4">{index < steps.length - 1 && <span className="absolute left-[17px] top-9 h-[calc(100%-18px)] w-px bg-[#dce6e0]" />}<span className={`relative z-10 grid size-9 shrink-0 place-items-center rounded-full text-xs font-bold ${step.enabled ? "bg-[#0b553f] text-white" : "bg-[#e9eeeb] text-[#87968f]"}`}>{index + 1}</span><div className="min-w-0 flex-1 rounded-xl border border-[#e4ebe7] p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2"><span className="text-xs font-semibold text-[#61766c]">Enviar após</span><Input aria-label={`Dias da etapa ${index + 1}`} type="number" min={0} max={365} value={step.delayDays} onChange={(event) => updateStep(step.id, { delayDays: Math.max(0, Number(event.target.value)) })} className="h-8 w-20 text-center font-bold text-[#0b553f]" /><span className="text-xs font-semibold text-[#61766c]">{step.delayDays === 1 ? "dia" : "dias"}</span></div><div className="flex items-center gap-1"><Button type="button" variant="ghost" size="icon" aria-label="Mover etapa para cima" disabled={index === 0} onClick={() => moveStep(index, -1)} className="size-8"><ArrowUp className="size-4" /></Button><Button type="button" variant="ghost" size="icon" aria-label="Mover etapa para baixo" disabled={index === steps.length - 1} onClick={() => moveStep(index, 1)} className="size-8"><ArrowDown className="size-4" /></Button><Button type="button" variant="ghost" size="icon" aria-label="Duplicar etapa" onClick={() => duplicateStep(step, index)} className="size-8"><Copy className="size-4" /></Button><Button type="button" variant="ghost" size="icon" aria-label="Remover etapa" onClick={() => removeStep(step.id)} className="size-8 text-red-500 hover:text-red-600"><Trash2 className="size-4" /></Button><Switch aria-label={`Ativar etapa ${index + 1}`} checked={step.enabled} onCheckedChange={(enabled) => updateStep(step.id, { enabled })} /></div></div><div className="mt-4 grid gap-3"><Field label="Objetivo desta etapa"><Input value={step.title} onChange={(event) => updateStep(step.id, { title: event.target.value })} /></Field><Field label="Orientação da mensagem"><Textarea value={step.message} onChange={(event) => updateStep(step.id, { message: event.target.value })} className="min-h-16 resize-y" /></Field></div></div></div>)}</div>
-          <div className="mt-6 flex flex-col gap-2 border-t border-[#e8eeea] pt-5 sm:flex-row sm:justify-between"><Button type="button" variant="outline" onClick={resetSequence}>Restaurar padrão</Button><Button type="button" onClick={addStep} className="bg-[#0b553f] hover:bg-[#074632]"><Plus className="mr-2 size-4" />Adicionar etapa</Button></div>
+          <div className="mt-6 flex flex-col gap-2 border-t border-[#e8eeea] pt-5 sm:flex-row sm:justify-between"><Button type="button" variant="outline" onClick={resetSequence}>Restaurar padrão</Button><div className="flex gap-2"><Button type="button" onClick={addStep} variant="outline"><Plus className="mr-2 size-4" />Adicionar etapa</Button><Button type="button" onClick={onSave} disabled={saving} className="bg-[#0b553f] hover:bg-[#074632]">Salvar alterações</Button></div></div>
         </section>
       </div>
 
-      <aside className="h-fit rounded-2xl bg-[#0a4938] p-6 text-white"><MessageCircle className="size-7 text-[#b7e64a]" /><h2 className="mt-5 text-lg font-bold">Regras adaptáveis</h2><p className="mt-2 text-sm leading-6 text-emerald-50/70">Esta cadência é apenas um modelo. Cada equipe poderá criar versões diferentes para clientes, licenciados, campanhas e origens de contato.</p><div className="mt-5 rounded-xl bg-white/[.07] p-4 text-xs leading-5 text-emerald-50/70"><strong className="mb-1 block text-white">Como os dias funcionam</strong>Zero envia imediatamente. Os demais valores definem quantos dias após o cadastro cada etapa deve acontecer.</div><div className="mt-3 rounded-xl bg-white/[.07] p-4 text-xs leading-5 text-emerald-50/70"><strong className="mb-1 block text-white">Envio seguro</strong>A UazAPI será conectada no servidor, sem expor a chave no celular.</div></aside>
+      <aside className="h-fit rounded-2xl bg-[#0a4938] p-6 text-white"><MessageCircle className="size-7 text-[#b7e64a]" /><h2 className="mt-5 text-lg font-bold">Regras adaptáveis</h2><p className="mt-2 text-sm leading-6 text-emerald-50/70">A cadência fica vinculada à sua conta e pode ser alterada sempre que a operação mudar.</p><div className="mt-5 rounded-xl bg-white/[.07] p-4 text-xs leading-5 text-emerald-50/70"><strong className="mb-1 block text-white">Como os dias funcionam</strong>Zero agenda para o mesmo dia. Os demais valores contam a partir do cadastro do contato.</div><div className="mt-3 rounded-xl bg-white/[.07] p-4 text-xs leading-5 text-emerald-50/70"><strong className="mb-1 block text-white">WhatsApp disponível agora</strong>O sistema abre a conversa com a mensagem preenchida e registra a atividade. O envio automático entra quando a UazAPI for conectada.</div></aside>
     </div>
   </>;
 }
@@ -297,8 +399,16 @@ function AddLeadDialog({ open, setOpen, onAdd }: { open: boolean; setOpen: (v: b
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="grid gap-1.5 text-xs font-semibold text-[#4f675d]">{label}{children}</label>; }
 
-function LeadSheet({ lead, onClose, onSend }: { lead: Lead | null; onClose: () => void; onSend: (l: Lead) => void }) {
-  if (!lead) return null; const timeline = timelineByLead[lead.id] || [{ title: "Contato cadastrado", detail: lead.origin, time: "Agora" }];
-  return <Sheet open={!!lead} onOpenChange={(open) => !open && onClose()}><SheetContent className="w-full overflow-y-auto p-0 sm:max-w-[460px]"><div className="bg-[#083f31] p-7 text-white"><SheetHeader><div className="flex items-center gap-4"><span className="grid size-14 place-items-center rounded-full bg-[#b7e64a] text-base font-bold text-[#063d2e]">{lead.name.split(" ").slice(0, 2).map((p) => p[0]).join("")}</span><div><SheetTitle className="text-left text-xl text-white">{lead.name}</SheetTitle><SheetDescription className="mt-1 text-left text-emerald-50/65">{lead.kind} · {lead.origin}</SheetDescription></div></div></SheetHeader></div><div className="space-y-6 p-6"><div className="flex items-center justify-between"><Status value={lead.status} /><span className="text-xs font-semibold text-[#667970]">Próximo: {lead.nextContact}</span></div><Button onClick={() => onSend(lead)} className="h-12 w-full rounded-xl bg-[#22a568] hover:bg-[#198a56]"><MessageCircle className="mr-2 size-5" />Preparar mensagem no WhatsApp</Button><section><h3 className="text-xs font-bold uppercase tracking-[.12em] text-[#83928b]">Informações</h3><div className="mt-3 divide-y divide-[#e8eeea] rounded-xl border border-[#e1e9e4]"><Info label="WhatsApp" value={lead.phone} /><Info label="E-mail" value={lead.email || "Não informado"} /><Info label="Interesse" value={lead.interest} /></div></section><section><h3 className="text-xs font-bold uppercase tracking-[.12em] text-[#83928b]">Histórico</h3><div className="mt-4 space-y-5">{timeline.map((item) => <div key={item.time} className="flex gap-3"><span className="mt-1.5 size-2 rounded-full bg-[#93c83e] ring-4 ring-[#edf6e5]" /><div><p className="text-sm font-bold">{item.title}</p><p className="mt-1 text-xs text-[#75867e]">{item.detail}</p><p className="mt-1 text-[11px] text-[#9aa7a1]">{item.time}</p></div></div>)}</div></section>{lead.note && <section className="rounded-xl bg-[#f2f6f3] p-4"><div className="mb-1 flex items-center gap-2 text-xs font-bold"><CircleHelp className="size-4" />Observação</div><p className="text-sm text-[#61736b]">{lead.note}</p></section>}</div></SheetContent></Sheet>;
+function LeadSheet({ lead, onClose, onSend, onStatusChange, onDelete }: { lead: Lead | null; onClose: () => void; onSend: (l: Lead) => void; onStatusChange: (lead: Lead, status: LeadStatus) => void; onDelete: (lead: Lead) => void }) {
+  if (!lead) return null;
+  const timeline = lead.history?.length ? lead.history : [{ id: "created", title: "Contato cadastrado", detail: lead.origin, time: lead.createdAt ? new Date(lead.createdAt).toLocaleString("pt-BR") : "Agora" }];
+  return <Sheet open={!!lead} onOpenChange={(open) => !open && onClose()}><SheetContent className="w-full overflow-y-auto p-0 sm:max-w-[460px]"><div className="bg-[#083f31] p-7 text-white"><SheetHeader><div className="flex items-center gap-4"><span className="grid size-14 place-items-center rounded-full bg-[#b7e64a] text-base font-bold text-[#063d2e]">{lead.name.split(" ").slice(0, 2).map((p) => p[0]).join("")}</span><div><SheetTitle className="text-left text-xl text-white">{lead.name}</SheetTitle><SheetDescription className="mt-1 text-left text-emerald-50/65">{lead.kind} · {lead.origin}</SheetDescription></div></div></SheetHeader></div><div className="space-y-6 p-6"><div className="flex items-center justify-between gap-3"><select aria-label="Status do contato" value={lead.status} onChange={(event) => onStatusChange(lead, event.target.value as LeadStatus)} className="h-9 rounded-full border border-[#dbe6df] bg-white px-3 text-xs font-semibold text-[#315448]"><option>Novo</option><option>Em contato</option><option>Respondeu</option><option>Qualificado</option></select><span className="text-xs font-semibold text-[#667970]">Próximo: {lead.nextContact}</span></div><Button onClick={() => onSend(lead)} className="h-12 w-full rounded-xl bg-[#22a568] hover:bg-[#198a56]"><MessageCircle className="mr-2 size-5" />Abrir conversa no WhatsApp</Button><section><h3 className="text-xs font-bold uppercase tracking-[.12em] text-[#83928b]">Informações</h3><div className="mt-3 divide-y divide-[#e8eeea] rounded-xl border border-[#e1e9e4]"><Info label="WhatsApp" value={lead.phone} /><Info label="E-mail" value={lead.email || "Não informado"} /><Info label="Interesse" value={lead.interest} /></div></section><section><h3 className="text-xs font-bold uppercase tracking-[.12em] text-[#83928b]">Histórico</h3><div className="mt-4 space-y-5">{timeline.map((item) => <div key={item.id} className="flex gap-3"><span className="mt-1.5 size-2 rounded-full bg-[#93c83e] ring-4 ring-[#edf6e5]" /><div><p className="text-sm font-bold">{item.title}</p><p className="mt-1 text-xs text-[#75867e]">{item.detail}</p><p className="mt-1 text-[11px] text-[#9aa7a1]">{item.time}</p></div></div>)}</div></section>{lead.note && <section className="rounded-xl bg-[#f2f6f3] p-4"><div className="mb-1 flex items-center gap-2 text-xs font-bold"><CircleHelp className="size-4" />Observação</div><p className="text-sm text-[#61736b]">{lead.note}</p></section>}<Button variant="outline" onClick={() => onDelete(lead)} className="w-full border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"><Trash2 className="mr-2 size-4" />Excluir contato</Button></div></SheetContent></Sheet>;
+}
+
+function NotificationsSheet({ open, onClose, notifications, onSelect }: { open: boolean; onClose: () => void; notifications: AppNotification[]; onSelect: (item: AppNotification) => void }) {
+  return <Sheet open={open} onOpenChange={(value) => !value && onClose()}><SheetContent className="w-full sm:max-w-[420px]"><SheetHeader><SheetTitle>Notificações</SheetTitle><SheetDescription>Follow-ups e oportunidades que precisam da sua atenção.</SheetDescription></SheetHeader><div className="mt-6 space-y-3">{notifications.map((item) => <button key={item.id} onClick={() => onSelect(item)} className="flex w-full gap-3 rounded-xl border border-[#e1e9e4] p-4 text-left transition hover:bg-[#f5f8f6]"><span className={`mt-1 size-2.5 shrink-0 rounded-full ${item.urgent ? "bg-amber-500" : "bg-[#93c83e]"}`} /><span><strong className="block text-sm text-[#23483b]">{item.title}</strong><span className="mt-1 block text-xs leading-5 text-[#71827a]">{item.detail}</span></span></button>)}{notifications.length === 0 && <div className="rounded-xl bg-[#f3f7f4] px-5 py-10 text-center"><Check className="mx-auto size-7 text-[#62a02b]" /><p className="mt-3 text-sm font-bold">Tudo em dia</p><p className="mt-1 text-xs text-[#74867e]">Nenhuma ação pendente agora.</p></div>}</div></SheetContent></Sheet>;
+}
+function MessageDialog({ lead, body, setBody, onClose, onConfirm }: { lead: Lead | null; body: string; setBody: (value: string) => void; onClose: () => void; onConfirm: () => void }) {
+  return <Dialog open={!!lead} onOpenChange={(open) => !open && onClose()}><DialogContent className="rounded-2xl sm:max-w-[540px]"><DialogHeader><DialogTitle>Mensagem para {lead?.name}</DialogTitle><DialogDescription>Revise o texto antes de abrir a conversa no WhatsApp.</DialogDescription></DialogHeader><Textarea value={body} onChange={(event) => setBody(event.target.value)} className="min-h-40 resize-y" /><div className="flex justify-end gap-2"><Button variant="ghost" onClick={onClose}>Cancelar</Button><Button onClick={onConfirm} disabled={!body.trim()} className="bg-[#22a568] hover:bg-[#198a56]"><Send className="mr-2 size-4" />Abrir WhatsApp</Button></div></DialogContent></Dialog>;
 }
 function Info({ label, value }: { label: string; value: string }) { return <div className="flex items-center justify-between gap-4 px-4 py-3"><span className="text-xs text-[#7b8b84]">{label}</span><span className="text-right text-sm font-semibold">{value}</span></div>; }

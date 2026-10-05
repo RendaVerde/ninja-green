@@ -1,6 +1,6 @@
 # Ninja Green
 
-MVP mobile-first para cadastrar oportunidades e organizar follow-ups comerciais pelo WhatsApp.
+Aplicação mobile-first para cadastrar oportunidades e organizar follow-ups comerciais pelo WhatsApp.
 
 ## Rodar localmente
 
@@ -9,7 +9,7 @@ npm install
 npm run dev
 ```
 
-Abra `http://localhost:3000`. Sem as variáveis do Supabase, o painel continua disponível em modo local para desenvolvimento. Com as variáveis preenchidas, a tela de login passa a proteger automaticamente o painel.
+Abra `http://localhost:3000`. Com as variáveis preenchidas, a tela de login protege o painel e todos os dados ficam vinculados ao usuário autenticado.
 
 ## Login e administração
 
@@ -39,18 +39,17 @@ Nada importante deve depender de valores fixos. A cadência já permite:
 - escolher o público da sequência;
 - decidir se a automação para quando o contato responde.
 
-Enquanto o Supabase não está conectado, essa configuração fica salva apenas no dispositivo usado. O schema já separa usuários, contatos, sequências, etapas, vínculos e mensagens para permitir vários modelos por usuário, campanha e tipo de contato.
+A configuração fica salva no Supabase e vinculada à conta. O schema separa usuários, contatos, sequências, etapas, vínculos e mensagens para permitir vários modelos por usuário, campanha e tipo de contato.
 
 ## Vercel
 
 O projeto usa Next.js e está preparado para importação direta do repositório GitHub pela Vercel. Cadastre no painel da Vercel as mesmas variáveis listadas em `env/production.env.example`; não faça upload de um arquivo com chaves reais.
 
-## Próxima etapa
+## Operação atual
 
-1. Criar o projeto no Supabase e aplicar o schema preparado.
-2. Preencher as variáveis locais e da Vercel.
-3. Migrar os dados de demonstração para as tabelas por usuário.
-4. Configurar a instância da UazAPI no servidor.
-5. Testar o primeiro envio com um número autorizado antes de liberar automações.
+- Contatos, cadência, etapas, status e histórico usam dados reais do Supabase.
+- O sino mostra follow-ups vencidos, respostas marcadas e primeiros contatos pendentes.
+- O envio manual abre o WhatsApp com a mensagem preenchida, registra a atividade e avança a cadência.
+- Para envio automático em segundo plano, ainda é necessário configurar `UAZAPI_BASE_URL` e `UAZAPI_INSTANCE_TOKEN`, implementar o job agendado e testar uma instância autorizada.
 
 As credenciais do WhatsApp nunca devem ser expostas no navegador ou no aplicativo instalado.
