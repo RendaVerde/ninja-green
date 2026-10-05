@@ -1,14 +1,17 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-import { getSupabasePublicConfig } from "@/lib/supabase/config";
+import {
+  getSupabasePublicConfig,
+  isSupabaseConfigured,
+} from "@/lib/supabase/config";
 
 export async function updateSupabaseSession(request: NextRequest) {
-  const config = getSupabasePublicConfig();
-
-  if (!config) {
+  if (!isSupabaseConfigured()) {
     return NextResponse.next({ request });
   }
+
+  const config = getSupabasePublicConfig();
 
   let response = NextResponse.next({ request });
 
