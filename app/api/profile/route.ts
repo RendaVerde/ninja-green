@@ -21,7 +21,13 @@ export async function PATCH(request: Request) {
   if (requestedEmail !== user.email?.toLowerCase()) authUpdate.email = requestedEmail;
   if (parsed.data.password) authUpdate.password = parsed.data.password;
   const { data, error } = await supabase.auth.updateUser(authUpdate);
-  if (error) return NextResponse.json({ error: error.message.includes("already") ? "Este e-mail já está em uso." : "Não foi possível atualizar o perfil." }, { status: 400 });
+  if (error) {
+    const message = error.message.toLowerCase();
+    const friendlyMessage = message.includes("same password") || message.includes("different from the old")
+      ? "A nova senha precisa ser diferente da senha atual."
+      : message.includes("already") ? "Este e-mail já está em uso." : "Não foi possível atualizar o perfil.";
+    return NextResponse.json({ error: friendlyMessage }, { status: 400 });
+  }
   const { error: profileError } = await supabase.from("profiles").update({ full_name: parsed.data.profileName, updated_at: new Date().toISOString() }).eq("id", user.id);
   if (profileError) return NextResponse.json({ error: "O acesso foi atualizado, mas o nome de perfil não pôde ser salvo." }, { status: 500 });
   const emailPending = requestedEmail !== data.user.email?.toLowerCase();

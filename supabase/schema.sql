@@ -157,6 +157,7 @@ alter table public.whatsapp_connections enable row level security;
 alter table public.whatsapp_connection_attendants enable row level security;
 
 create policy "profiles_read_own_or_admin" on public.profiles for select using (id = auth.uid() or public.is_admin());
+create policy "profiles_update_own" on public.profiles for update using (id = auth.uid()) with check (id = auth.uid());
 create policy "contacts_owner_all" on public.contacts for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 create policy "sequences_owner_all" on public.sequences for all using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 create policy "steps_through_sequence" on public.sequence_steps for all using (exists(select 1 from public.sequences where sequences.id = sequence_steps.sequence_id and sequences.owner_id = auth.uid())) with check (exists(select 1 from public.sequences where sequences.id = sequence_steps.sequence_id and sequences.owner_id = auth.uid()));
