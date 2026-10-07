@@ -1,5 +1,14 @@
+import type { SequenceAudience } from "@/lib/audience";
+
 export type LeadStatus = "Novo" | "Em contato" | "Respondeu" | "Qualificado";
 export type LeadKind = "Cliente" | "Licenciado";
+
+export type ContactTag = {
+  id: string;
+  name: string;
+  color: string | null;
+  contactCount?: number;
+};
 
 export type Lead = {
   id: string;
@@ -13,6 +22,7 @@ export type Lead = {
   nextContact: string;
   lastContact: string;
   note?: string;
+  tagIds?: string[];
   nextRunAt?: string | null;
   lastContactAt?: string | null;
   createdAt?: string;
@@ -25,6 +35,19 @@ export type SequenceStep = {
   title: string;
   message: string;
   enabled: boolean;
+};
+
+export type FollowUpSequence = {
+  id: string;
+  name: string;
+  audience: SequenceAudience;
+  pauseOnReply: boolean;
+  active: boolean;
+  tagIds: string[];
+  contactIds: string[];
+  steps: SequenceStep[];
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export const defaultSequence: SequenceStep[] = [

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowDown, ArrowUp, Bell, CalendarClock, Check, ChevronRight, CircleHelp, Clock3, Copy, Inbox, LayoutDashboard, Loader2,
@@ -8,6 +8,12 @@ import {
   Sparkles, Target, Trash2, TrendingUp, UserCog, UserRound, UsersRound, Zap,
 } from "lucide-react";
 import { toast } from "sonner";
+import { MoveConfirmDialog } from "@/components/sequences/move-confirm-dialog";
+import { SequenceAudiencePicker } from "@/components/sequences/sequence-audience-picker";
+import { SequenceSwitcher } from "@/components/sequences/sequence-switcher";
+import { ContactTagBadges, ContactTagSelector } from "@/components/tags/contact-tag-selector";
+import { TagManager } from "@/components/tags/tag-manager";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -18,16 +24,19 @@ import { Textarea } from "@/components/ui/textarea";
 import { Toaster } from "@/components/ui/sonner";
 import { ProfileDialog, UserProfile } from "@/components/profile-dialog";
 import { WhatsAppConnections } from "@/components/whatsapp-connections";
-import { defaultSequence, Lead, LeadKind, LeadStatus, SequenceStep } from "@/lib/demo-data";
+import type { AudienceConflict, SequenceAudience } from "@/lib/audience";
+import { defaultSequence, type ContactTag, type FollowUpSequence, Lead, LeadKind, LeadStatus, SequenceStep } from "@/lib/demo-data";
 
 type View = "inicio" | "contatos" | "sequencias" | "conexoes";
 type AppNotification = { id: string; title: string; detail: string; leadId?: string; urgent?: boolean };
 type AppDataPayload = {
   error?: string;
   contacts?: Lead[];
-  sequence?: { id: string; name: string; audience: string; pauseOnReply: boolean; steps: SequenceStep[] } | null;
+  tags?: ContactTag[];
 };
+type SequencesPayload = { error?: string; sequences?: FollowUpSequence[] };
 type MutationPayload = { error?: string; id?: string };
+type AssignmentPayload = { error?: string; status?: "success" | "conflict"; conflicts?: AudienceConflict[] };
 
 const statusStyle: Record<LeadStatus, string> = {
   Novo: "bg-blue-50 text-blue-700 border-blue-100",
@@ -68,14 +77,25 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
   const [messageBody, setMessageBody] = useState("");
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"Todos" | LeadKind>("Todos");
+  const [tags, setTags] = useState<ContactTag[]>([]);
+  const [sequences, setSequences] = useState<FollowUpSequence[]>([]);
   const [sequence, setSequence] = useState(defaultSequence);
   const [sequenceId, setSequenceId] = useState<string | null>(null);
   const [sequenceName, setSequenceName] = useState("Follow-up principal");
-  const [sequenceAudience, setSequenceAudience] = useState("Todos os contatos");
+  const [sequenceAudience, setSequenceAudience] = useState<SequenceAudience>("Todos os contatos");
   const [pauseOnReply, setPauseOnReply] = useState(true);
+  const [sequenceActive, setSequenceActive] = useState(true);
+  const [sequenceTagIds, setSequenceTagIds] = useState<string[]>([]);
+  const [sequenceContactIds, setSequenceContactIds] = useState<string[]>([]);
+  const [sequenceDirty, setSequenceDirty] = useState(false);
+  const [pendingSequenceTarget, setPendingSequenceTarget] = useState<string | null>(null);
+  const [tagManagerOpen, setTagManagerOpen] = useState(false);
+  const [moveConflicts, setMoveConflicts] = useState<AudienceConflict[]>([]);
+  const [pendingMoveSequenceId, setPendingMoveSequenceId] = useState<string | null>(null);
   const [dataLoading, setDataLoading] = useState(authEnabled);
   const [sequenceSaving, setSequenceSaving] = useState(false);
   const [currentTime, setCurrentTime] = useState<number | null>(null);
+  const sequenceIdRef = useRef<string | null>(null);
   const initials = profile.name.split(" ").slice(0, 2).map((part) => part[0]).join("").toUpperCase();
   const firstName = profile.name.split(" ")[0];
 
@@ -90,31 +110,62 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
     return () => { window.clearTimeout(initialTimer); window.clearInterval(interval); };
   }, []);
 
-  const loadData = useCallback(async () => {
+  useEffect(() => {
+    sequenceIdRef.current = sequenceId;
+  }, [sequenceId]);
+
+  useEffect(() => {
+    if (!sequenceDirty) return;
+    const warnBeforeLeaving = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener("beforeunload", warnBeforeLeaving);
+    return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
+  }, [sequenceDirty]);
+
+  const applySequenceDraft = useCallback((item: FollowUpSequence) => {
+    setSequenceId(item.id);
+    setSequenceName(item.name);
+    setSequenceAudience(item.audience);
+    setPauseOnReply(item.pauseOnReply);
+    setSequenceActive(item.active);
+    setSequenceTagIds(item.tagIds || []);
+    setSequenceContactIds(item.contactIds || []);
+    setSequence(item.steps?.length ? item.steps : defaultSequence.map((step) => ({ ...step })));
+    setSequenceDirty(false);
+  }, []);
+
+  const loadData = useCallback(async (preferredSequenceId?: string | null) => {
     if (!authEnabled) {
       setDataLoading(false);
       return;
     }
     setDataLoading(true);
     try {
-      const response = await fetch("/api/app-data", { cache: "no-store" });
-      if (response.status === 401) return router.push("/login");
-      const payload = await response.json() as AppDataPayload;
-      if (!response.ok) throw new Error(payload.error || "Falha ao carregar dados.");
-      setLeads(payload.contacts || []);
-      if (payload.sequence) {
-        setSequenceId(payload.sequence.id);
-        setSequenceName(payload.sequence.name);
-        setSequenceAudience(payload.sequence.audience);
-        setPauseOnReply(payload.sequence.pauseOnReply);
-        setSequence(payload.sequence.steps?.length ? payload.sequence.steps : defaultSequence);
-      }
+      const [dataResponse, sequencesResponse] = await Promise.all([
+        fetch("/api/app-data", { cache: "no-store" }),
+        fetch("/api/sequences", { cache: "no-store" }),
+      ]);
+      if (dataResponse.status === 401 || sequencesResponse.status === 401) return router.push("/login");
+      const [payload, sequencePayload] = await Promise.all([
+        dataResponse.json() as Promise<AppDataPayload>,
+        sequencesResponse.json() as Promise<SequencesPayload>,
+      ]);
+      if (!dataResponse.ok) throw new Error(payload.error || "Falha ao carregar dados.");
+      if (!sequencesResponse.ok) throw new Error(sequencePayload.error || "Falha ao carregar as cadências.");
+      const nextLeads = payload.contacts || [];
+      const nextTags = (payload.tags || []).map((tag) => ({ ...tag, contactCount: nextLeads.filter((lead) => (lead.tagIds || []).includes(tag.id)).length }));
+      const nextSequences = sequencePayload.sequences || [];
+      setLeads(nextLeads);
+      setTags(nextTags);
+      setSequences(nextSequences);
+      const wantedId = preferredSequenceId === undefined ? sequenceIdRef.current : preferredSequenceId;
+      const selectedSequence = nextSequences.find((item) => item.id === wantedId) || nextSequences.find((item) => item.active) || nextSequences[0];
+      if (selectedSequence) applySequenceDraft(selectedSequence);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Não foi possível carregar seus dados.");
     } finally {
       setDataLoading(false);
     }
-  }, [authEnabled, router]);
+  }, [applySequenceDraft, authEnabled, router]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadData(), 0);
@@ -154,19 +205,111 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
     await loadData();
   }
 
-  async function saveSequence() {
+  function openSequenceDraft(target: string) {
+    setPendingSequenceTarget(null);
+    if (target === "__new__") {
+      setSequenceId(null);
+      setSequenceName("Nova sequência");
+      setSequenceAudience("Todos os contatos");
+      setPauseOnReply(true);
+      setSequenceActive(true);
+      setSequenceTagIds([]);
+      setSequenceContactIds([]);
+      setSequence(defaultSequence.map((step) => ({ ...step, id: crypto.randomUUID() })));
+      setSequenceDirty(true);
+      return;
+    }
+    const targetSequence = sequences.find((item) => item.id === target);
+    if (targetSequence) applySequenceDraft(targetSequence);
+  }
+
+  function requestSequenceDraft(target: string) {
+    if (target === sequenceId) return;
+    if (sequenceDirty) return setPendingSequenceTarget(target);
+    openSequenceDraft(target);
+  }
+
+  async function duplicateSequence() {
+    if (!sequenceId) return;
+    if (sequenceDirty) return toast.info("Salve ou descarte as alterações antes de duplicar este fluxo.");
     setSequenceSaving(true);
     try {
-      const response = await fetch("/api/sequences", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: sequenceId, name: sequenceName, audience: sequenceAudience, pauseOnReply, steps: sequence }) });
+      const response = await fetch(`/api/sequences/${sequenceId}/duplicate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
       const payload = await response.json().catch(() => ({})) as MutationPayload;
-      if (!response.ok) throw new Error(payload.error || "Não foi possível salvar a cadência.");
-      if (payload.id) setSequenceId(payload.id);
-      toast.success("Cadência salva na sua conta");
-      await loadData();
+      if (!response.ok || !payload.id) throw new Error(payload.error || "Não foi possível duplicar a cadência.");
+      toast.success("Fluxo duplicado");
+      await loadData(payload.id);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível duplicar a cadência.");
+    } finally {
+      setSequenceSaving(false);
+    }
+  }
+
+  async function persistSequence(confirmMove = false, forcedSequenceId?: string | null) {
+    setSequenceSaving(true);
+    try {
+      let savedId = forcedSequenceId || sequenceId;
+      if (!savedId) {
+        const createResponse = await fetch("/api/sequences", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: sequenceName, audience: sequenceAudience, pauseOnReply, active: sequenceActive, steps: sequence }) });
+        const createPayload = await createResponse.json().catch(() => ({})) as MutationPayload;
+        if (!createResponse.ok || !createPayload.id) throw new Error(createPayload.error || "Não foi possível criar a cadência.");
+        const createdId = createPayload.id;
+        savedId = createdId;
+        setSequenceId(createdId);
+        setSequences((items) => items.some((item) => item.id === createdId) ? items : [...items, { id: createdId, name: sequenceName, audience: sequenceAudience, pauseOnReply, active: sequenceActive, tagIds: [], contactIds: [], steps: sequence }]);
+      }
+
+      if (!savedId) throw new Error("Não foi possível identificar a cadência.");
+      const activeSequenceId = savedId;
+
+      const assignmentResponse = await fetch(`/api/sequences/${activeSequenceId}/assignments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audience: sequenceAudience, tagIds: sequenceTagIds, contactIds: sequenceContactIds, confirmMove }),
+      });
+      const assignmentPayload = await assignmentResponse.json().catch(() => ({})) as AssignmentPayload;
+      if (assignmentResponse.status === 409) {
+        setMoveConflicts(assignmentPayload.conflicts || []);
+        setPendingMoveSequenceId(activeSequenceId);
+        return;
+      }
+      if (!assignmentResponse.ok) throw new Error(assignmentPayload.error || "Não foi possível aplicar o público da cadência.");
+
+      const saveResponse = await fetch("/api/sequences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: activeSequenceId, name: sequenceName, audience: sequenceAudience, pauseOnReply, active: sequenceActive, steps: sequence }),
+      });
+      const savePayload = await saveResponse.json().catch(() => ({})) as MutationPayload;
+      if (!saveResponse.ok) throw new Error(savePayload.error || "Não foi possível salvar a cadência.");
+      setMoveConflicts([]);
+      setPendingMoveSequenceId(null);
+      setSequenceDirty(false);
+      toast.success(confirmMove ? "Contatos movidos e cadência salva" : "Cadência salva na sua conta");
+      await loadData(activeSequenceId);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Não foi possível salvar a cadência.");
     } finally {
       setSequenceSaving(false);
+    }
+  }
+
+  function updateContactTags(contactId: string, tagIds: string[]) {
+    const nextLeads = leads.map((lead) => lead.id === contactId ? { ...lead, tagIds } : lead);
+    setLeads(nextLeads);
+    setSelected((contact) => contact?.id === contactId ? { ...contact, tagIds } : contact);
+    setTags((items) => items.map((tag) => ({ ...tag, contactCount: nextLeads.filter((lead) => (lead.tagIds || []).includes(tag.id)).length })));
+  }
+
+  function handleTagDeleted(tagId: string) {
+    const nextLeads = leads.map((lead) => ({ ...lead, tagIds: (lead.tagIds || []).filter((id) => id !== tagId) }));
+    setLeads(nextLeads);
+    setSelected((contact) => contact ? { ...contact, tagIds: (contact.tagIds || []).filter((id) => id !== tagId) } : null);
+    setSequences((items) => items.map((item) => ({ ...item, tagIds: item.tagIds.filter((id) => id !== tagId) })));
+    if (sequenceTagIds.includes(tagId)) {
+      setSequenceTagIds((items) => items.filter((id) => id !== tagId));
+      setSequenceDirty(true);
     }
   }
 
@@ -241,17 +384,20 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
         <div className="mx-auto max-w-[1280px] px-4 py-6 sm:px-7 lg:px-10 lg:py-9">
           {view === "inicio" && <Dashboard leads={leads} loading={dataLoading} currentTime={currentTime} userName={firstName} onAdd={() => setAddOpen(true)} onSelect={setSelected} onSend={sendMessage} onViewContacts={() => setView("contatos")} />}
           {view === "contatos" && <Contacts leads={visibleLeads} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} onAdd={() => setAddOpen(true)} onSelect={setSelected} />}
-          {view === "sequencias" && <Sequences steps={sequence} setSteps={setSequence} name={sequenceName} setName={setSequenceName} audience={sequenceAudience} setAudience={setSequenceAudience} pauseOnReply={pauseOnReply} setPauseOnReply={setPauseOnReply} onSave={saveSequence} saving={sequenceSaving} />}
+          {view === "sequencias" && <Sequences sequences={sequences} sequenceId={sequenceId} steps={sequence} setSteps={(steps) => { setSequence(steps); setSequenceDirty(true); }} name={sequenceName} setName={(name) => { setSequenceName(name); setSequenceDirty(true); }} audience={sequenceAudience} setAudience={(audience) => { setSequenceAudience(audience); setSequenceDirty(true); }} pauseOnReply={pauseOnReply} setPauseOnReply={(pause) => { setPauseOnReply(pause); setSequenceDirty(true); }} active={sequenceActive} setActive={(active) => { setSequenceActive(active); setSequenceDirty(true); }} tags={tags} leads={leads} selectedTagIds={sequenceTagIds} setSelectedTagIds={(ids) => { setSequenceTagIds(ids); setSequenceDirty(true); }} selectedContactIds={sequenceContactIds} setSelectedContactIds={(ids) => { setSequenceContactIds(ids); setSequenceDirty(true); }} dirty={sequenceDirty} onSelect={requestSequenceDraft} onCreate={() => requestSequenceDraft("__new__")} onDuplicate={duplicateSequence} onManageTags={() => setTagManagerOpen(true)} onSave={() => void persistSequence()} saving={sequenceSaving} />}
           {view === "conexoes" && <WhatsAppConnections />}
         </div>
       </main>
 
       <MobileNav view={view} setView={setView} onAdd={() => setAddOpen(true)} onProfile={() => setProfileOpen(true)} />
-      <AddLeadDialog open={addOpen} setOpen={setAddOpen} onAdd={addLead} />
-      <LeadSheet lead={selected} onClose={() => setSelected(null)} onSend={sendMessage} onStatusChange={updateLeadStatus} onDelete={deleteLead} />
+      <AddLeadDialog open={addOpen} setOpen={setAddOpen} onAdd={addLead} tags={tags} />
+      <LeadSheet lead={selected} tags={tags} onTagsUpdated={updateContactTags} onClose={() => setSelected(null)} onSend={sendMessage} onStatusChange={updateLeadStatus} onDelete={deleteLead} />
       <NotificationsSheet open={notificationsOpen} onClose={() => setNotificationsOpen(false)} notifications={notifications} onSelect={(item) => { setNotificationsOpen(false); if (item.leadId) setSelected(leads.find((lead) => lead.id === item.leadId) || null); else setAddOpen(true); }} />
       <MessageDialog lead={messageLead} body={messageBody} setBody={setMessageBody} onClose={() => setMessageLead(null)} onConfirm={openWhatsApp} />
       <ProfileDialog open={profileOpen} onOpenChange={setProfileOpen} profile={profile} onUpdated={setProfile} />
+      <TagManager open={tagManagerOpen} onOpenChange={setTagManagerOpen} tags={tags} onTagsChange={setTags} onTagDeleted={handleTagDeleted} />
+      <MoveConfirmDialog open={moveConflicts.length > 0} conflicts={moveConflicts} loading={sequenceSaving} onCancel={() => { setMoveConflicts([]); setPendingMoveSequenceId(null); }} onConfirm={() => void persistSequence(true, pendingMoveSequenceId)} />
+      <AlertDialog open={pendingSequenceTarget !== null} onOpenChange={(open) => !open && setPendingSequenceTarget(null)}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Descartar alterações não salvas?</AlertDialogTitle><AlertDialogDescription>Você alterou este fluxo. Ao continuar, o rascunho atual será perdido.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Continuar editando</AlertDialogCancel><AlertDialogAction onClick={() => pendingSequenceTarget && openSequenceDraft(pendingSequenceTarget)} className="bg-red-600 text-white hover:bg-red-700">Descartar e trocar</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
       <Toaster richColors position="top-center" />
     </div>
   );
@@ -322,19 +468,34 @@ function Contacts({ leads, search, setSearch, filter, setFilter, onAdd, onSelect
 }
 
 type SequenceProps = {
+  sequences: FollowUpSequence[];
+  sequenceId: string | null;
   steps: SequenceStep[];
   setSteps: (steps: SequenceStep[]) => void;
   name: string;
   setName: (name: string) => void;
-  audience: string;
-  setAudience: (audience: string) => void;
+  audience: SequenceAudience;
+  setAudience: (audience: SequenceAudience) => void;
   pauseOnReply: boolean;
   setPauseOnReply: (pause: boolean) => void;
+  active: boolean;
+  setActive: (active: boolean) => void;
+  tags: ContactTag[];
+  leads: Lead[];
+  selectedTagIds: string[];
+  setSelectedTagIds: (ids: string[]) => void;
+  selectedContactIds: string[];
+  setSelectedContactIds: (ids: string[]) => void;
+  dirty: boolean;
+  onSelect: (id: string) => void;
+  onCreate: () => void;
+  onDuplicate: () => void;
+  onManageTags: () => void;
   onSave: () => void;
   saving: boolean;
 };
 
-function Sequences({ steps, setSteps, name, setName, audience, setAudience, pauseOnReply, setPauseOnReply, onSave, saving }: SequenceProps) {
+function Sequences({ sequences, sequenceId, steps, setSteps, name, setName, audience, setAudience, pauseOnReply, setPauseOnReply, active, setActive, tags, leads, selectedTagIds, setSelectedTagIds, selectedContactIds, setSelectedContactIds, dirty, onSelect, onCreate, onDuplicate, onManageTags, onSave, saving }: SequenceProps) {
   const updateStep = (id: string, patch: Partial<SequenceStep>) => setSteps(steps.map((step) => step.id === id ? { ...step, ...patch } : step));
   const moveStep = (index: number, direction: -1 | 1) => {
     const target = index + direction;
@@ -363,6 +524,8 @@ function Sequences({ steps, setSteps, name, setName, audience, setAudience, paus
     setName("Follow-up principal");
     setAudience("Todos os contatos");
     setPauseOnReply(true);
+    setSelectedTagIds([]);
+    setSelectedContactIds([]);
     toast.success("Sequência padrão restaurada");
   };
 
@@ -371,14 +534,13 @@ function Sequences({ steps, setSteps, name, setName, audience, setAudience, paus
       <div><p className="text-sm font-semibold text-[#789087]">Automação</p><h1 className="mt-1 text-3xl font-bold tracking-[-.035em]">Cadência de follow-up</h1><p className="mt-2 max-w-2xl text-sm text-[#71827a]">Defina livremente quando e como cada contato será retomado.</p></div>
       <Button type="button" onClick={onSave} disabled={saving} className="bg-[#0b553f] hover:bg-[#074632]">{saving ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Check className="mr-2 size-4" />}Salvar cadência</Button>
     </div>
+    <div className="mt-6"><SequenceSwitcher sequences={sequences} selectedId={sequenceId} draftName={name} active={active} dirty={dirty} saving={saving} onSelect={onSelect} onCreate={onCreate} onDuplicate={onDuplicate} onActiveChange={setActive} /></div>
 
-    <div className="mt-7 grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
+    <div className="mt-5 grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
       <div className="min-w-0 space-y-5">
         <section className="rounded-2xl border border-[#dfe8e2] bg-white p-5 sm:p-6">
-          <div className="grid gap-4 md:grid-cols-[1fr_220px]">
-            <Field label="Nome da sequência"><Input value={name} onChange={(event) => setName(event.target.value)} /></Field>
-            <Field label="Aplicar para"><select value={audience} onChange={(event) => setAudience(event.target.value)} className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"><option>Todos os contatos</option><option>Somente clientes</option><option>Somente licenciados</option></select></Field>
-          </div>
+          <Field label="Nome da sequência"><Input value={name} onChange={(event) => setName(event.target.value)} /></Field>
+          <div className="mt-5"><SequenceAudiencePicker audience={audience} onAudienceChange={setAudience} tags={tags} selectedTagIds={selectedTagIds} onTagIdsChange={setSelectedTagIds} contacts={leads} selectedContactIds={selectedContactIds} onContactIdsChange={setSelectedContactIds} onManageTags={onManageTags} /></div>
           <div className="mt-4 flex items-center justify-between rounded-xl bg-[#f3f7f4] p-4">
             <div><p className="text-sm font-bold">Pausar quando o contato responder</p><p className="mt-1 text-xs text-[#71837a]">Evita mensagens automáticas depois que a conversa começou.</p></div>
             <Switch checked={pauseOnReply} onCheckedChange={setPauseOnReply} />
@@ -397,20 +559,21 @@ function Sequences({ steps, setSteps, name, setName, audience, setAudience, paus
   </>;
 }
 
-function AddLeadDialog({ open, setOpen, onAdd }: { open: boolean; setOpen: (v: boolean) => void; onAdd: (l: Lead) => void }) {
+function AddLeadDialog({ open, setOpen, onAdd, tags }: { open: boolean; setOpen: (v: boolean) => void; onAdd: (l: Lead) => void; tags: ContactTag[] }) {
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const data = new FormData(event.currentTarget); const name = String(data.get("name") || "").trim(); const phone = String(data.get("phone") || "").trim(); if (!name || !phone) return toast.error("Preencha nome e WhatsApp.");
-    onAdd({ id: crypto.randomUUID(), name, phone, email: String(data.get("email") || ""), kind: String(data.get("kind")) as LeadKind, interest: String(data.get("interest") || "Ainda não informado"), origin: String(data.get("origin") || "Cadastro manual"), status: "Novo", nextContact: "Agora", lastContact: "Ainda não contatada", note: String(data.get("note") || "") }); event.currentTarget.reset();
+    onAdd({ id: crypto.randomUUID(), name, phone, email: String(data.get("email") || ""), kind: String(data.get("kind")) as LeadKind, interest: String(data.get("interest") || "Ainda não informado"), origin: String(data.get("origin") || "Cadastro manual"), status: "Novo", nextContact: "Agora", lastContact: "Ainda não contatada", note: String(data.get("note") || ""), tagIds: selectedTagIds }); event.currentTarget.reset(); setSelectedTagIds([]);
   }
-  return <Dialog open={open} onOpenChange={setOpen}><DialogContent className="max-h-[90vh] overflow-y-auto rounded-2xl sm:max-w-[560px]"><DialogHeader><div className="mb-2 grid size-11 place-items-center rounded-xl bg-[#e6f2d3] text-[#44701b]"><UserRound className="size-5" /></div><DialogTitle className="text-xl">Novo contato</DialogTitle><DialogDescription>Cadastre o essencial agora. Você completa o restante depois.</DialogDescription></DialogHeader><form onSubmit={submit} className="mt-2 grid gap-4 sm:grid-cols-2"><Field label="Nome *"><Input name="name" placeholder="Nome ou empresa" /></Field><Field label="WhatsApp *"><Input name="phone" inputMode="tel" placeholder="(00) 00000-0000" /></Field><Field label="E-mail"><Input name="email" type="email" placeholder="email@exemplo.com" /></Field><Field label="Origem"><Input name="origin" placeholder="Ex.: Mutirão Centro" /></Field><Field label="Objetivo"><select name="kind" className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"><option>Cliente</option><option>Licenciado</option></select></Field><Field label="Interesse"><select name="interest" className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"><option>Economia na conta de luz</option><option>Conexão residencial</option><option>Conexão empresarial</option><option>Conhecer o modelo de negócio</option><option>Renda complementar</option></select></Field><div className="sm:col-span-2"><Field label="Observação"><Textarea name="note" placeholder="Algo importante para personalizar o próximo contato…" className="min-h-20" /></Field></div><label className="flex items-start gap-3 rounded-xl bg-[#f3f7f4] p-3 text-xs leading-5 text-[#61746b] sm:col-span-2"><input type="checkbox" required className="mt-1 accent-[#0b553f]" /><span>Confirmo que este contato autorizou receber comunicações pelo WhatsApp.</span></label><div className="flex justify-end gap-2 sm:col-span-2"><Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancelar</Button><Button type="submit" className="bg-[#0b553f] hover:bg-[#074632]"><Check className="mr-2 size-4" />Cadastrar contato</Button></div></form></DialogContent></Dialog>;
+  return <Dialog open={open} onOpenChange={setOpen}><DialogContent className="max-h-[90vh] overflow-y-auto rounded-2xl sm:max-w-[560px]"><DialogHeader><div className="mb-2 grid size-11 place-items-center rounded-xl bg-[#e6f2d3] text-[#44701b]"><UserRound className="size-5" /></div><DialogTitle className="text-xl">Novo contato</DialogTitle><DialogDescription>Cadastre o essencial agora. Você completa o restante depois.</DialogDescription></DialogHeader><form onSubmit={submit} className="mt-2 grid gap-4 sm:grid-cols-2"><Field label="Nome *"><Input name="name" placeholder="Nome ou empresa" /></Field><Field label="WhatsApp *"><Input name="phone" inputMode="tel" placeholder="(00) 00000-0000" /></Field><Field label="E-mail"><Input name="email" type="email" placeholder="email@exemplo.com" /></Field><Field label="Origem"><Input name="origin" placeholder="Ex.: Mutirão Centro" /></Field><Field label="Objetivo"><select name="kind" className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"><option>Cliente</option><option>Licenciado</option></select></Field><Field label="Interesse"><select name="interest" className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"><option>Economia na conta de luz</option><option>Conexão residencial</option><option>Conexão empresarial</option><option>Conhecer o modelo de negócio</option><option>Renda complementar</option></select></Field><div className="sm:col-span-2"><Field label="Observação"><Textarea name="note" placeholder="Algo importante para personalizar o próximo contato…" className="min-h-20" /></Field></div>{tags.length > 0 && <div className="sm:col-span-2"><p className="mb-2 text-xs font-semibold text-[#4f675d]">Tags</p><div className="flex flex-wrap gap-2">{tags.map((tag) => { const selected = selectedTagIds.includes(tag.id); return <button type="button" key={tag.id} onClick={() => setSelectedTagIds((items) => selected ? items.filter((id) => id !== tag.id) : [...items, tag.id])} className={`flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold ${selected ? "border-[#77a82f] bg-[#edf6e3] text-[#315719]" : "border-[#dfe8e2] bg-white text-[#61756c]"}`}><span className="size-2 rounded-full" style={{ backgroundColor: tag.color || "#93c83e" }} />{tag.name}</button>; })}</div></div>}<label className="flex items-start gap-3 rounded-xl bg-[#f3f7f4] p-3 text-xs leading-5 text-[#61746b] sm:col-span-2"><input type="checkbox" required className="mt-1 accent-[#0b553f]" /><span>Confirmo que este contato autorizou receber comunicações pelo WhatsApp.</span></label><div className="flex justify-end gap-2 sm:col-span-2"><Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancelar</Button><Button type="submit" className="bg-[#0b553f] hover:bg-[#074632]"><Check className="mr-2 size-4" />Cadastrar contato</Button></div></form></DialogContent></Dialog>;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="grid gap-1.5 text-xs font-semibold text-[#4f675d]">{label}{children}</label>; }
 
-function LeadSheet({ lead, onClose, onSend, onStatusChange, onDelete }: { lead: Lead | null; onClose: () => void; onSend: (l: Lead) => void; onStatusChange: (lead: Lead, status: LeadStatus) => void; onDelete: (lead: Lead) => void }) {
+function LeadSheet({ lead, tags, onTagsUpdated, onClose, onSend, onStatusChange, onDelete }: { lead: Lead | null; tags: ContactTag[]; onTagsUpdated: (contactId: string, tagIds: string[]) => void; onClose: () => void; onSend: (l: Lead) => void; onStatusChange: (lead: Lead, status: LeadStatus) => void; onDelete: (lead: Lead) => void }) {
   if (!lead) return null;
   const timeline = lead.history?.length ? lead.history : [{ id: "created", title: "Contato cadastrado", detail: lead.origin, time: lead.createdAt ? new Date(lead.createdAt).toLocaleString("pt-BR") : "Agora" }];
-  return <Sheet open={!!lead} onOpenChange={(open) => !open && onClose()}><SheetContent className="w-full overflow-y-auto p-0 sm:max-w-[460px]"><div className="bg-[#083f31] p-7 text-white"><SheetHeader><div className="flex items-center gap-4"><span className="grid size-14 place-items-center rounded-full bg-[#b7e64a] text-base font-bold text-[#063d2e]">{lead.name.split(" ").slice(0, 2).map((p) => p[0]).join("")}</span><div><SheetTitle className="text-left text-xl text-white">{lead.name}</SheetTitle><SheetDescription className="mt-1 text-left text-emerald-50/65">{lead.kind} · {lead.origin}</SheetDescription></div></div></SheetHeader></div><div className="space-y-6 p-6"><div className="flex items-center justify-between gap-3"><select aria-label="Status do contato" value={lead.status} onChange={(event) => onStatusChange(lead, event.target.value as LeadStatus)} className="h-9 rounded-full border border-[#dbe6df] bg-white px-3 text-xs font-semibold text-[#315448]"><option>Novo</option><option>Em contato</option><option>Respondeu</option><option>Qualificado</option></select><span className="text-xs font-semibold text-[#667970]">Próximo: {lead.nextContact}</span></div><Button onClick={() => onSend(lead)} className="h-12 w-full rounded-xl bg-[#22a568] hover:bg-[#198a56]"><MessageCircle className="mr-2 size-5" />Abrir conversa no WhatsApp</Button><section><h3 className="text-xs font-bold uppercase tracking-[.12em] text-[#83928b]">Informações</h3><div className="mt-3 divide-y divide-[#e8eeea] rounded-xl border border-[#e1e9e4]"><Info label="WhatsApp" value={lead.phone} /><Info label="E-mail" value={lead.email || "Não informado"} /><Info label="Interesse" value={lead.interest} /></div></section><section><h3 className="text-xs font-bold uppercase tracking-[.12em] text-[#83928b]">Histórico</h3><div className="mt-4 space-y-5">{timeline.map((item) => <div key={item.id} className="flex gap-3"><span className="mt-1.5 size-2 rounded-full bg-[#93c83e] ring-4 ring-[#edf6e5]" /><div><p className="text-sm font-bold">{item.title}</p><p className="mt-1 text-xs text-[#75867e]">{item.detail}</p><p className="mt-1 text-[11px] text-[#9aa7a1]">{item.time}</p></div></div>)}</div></section>{lead.note && <section className="rounded-xl bg-[#f2f6f3] p-4"><div className="mb-1 flex items-center gap-2 text-xs font-bold"><CircleHelp className="size-4" />Observação</div><p className="text-sm text-[#61736b]">{lead.note}</p></section>}<Button variant="outline" onClick={() => onDelete(lead)} className="w-full border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"><Trash2 className="mr-2 size-4" />Excluir contato</Button></div></SheetContent></Sheet>;
+  return <Sheet open={!!lead} onOpenChange={(open) => !open && onClose()}><SheetContent className="w-full overflow-y-auto p-0 sm:max-w-[460px]"><div className="bg-[#083f31] p-7 text-white"><SheetHeader><div className="flex items-center gap-4"><span className="grid size-14 place-items-center rounded-full bg-[#b7e64a] text-base font-bold text-[#063d2e]">{lead.name.split(" ").slice(0, 2).map((p) => p[0]).join("")}</span><div><SheetTitle className="text-left text-xl text-white">{lead.name}</SheetTitle><SheetDescription className="mt-1 text-left text-emerald-50/65">{lead.kind} · {lead.origin}</SheetDescription></div></div></SheetHeader></div><div className="space-y-6 p-6"><div className="flex items-center justify-between gap-3"><select aria-label="Status do contato" value={lead.status} onChange={(event) => onStatusChange(lead, event.target.value as LeadStatus)} className="h-9 rounded-full border border-[#dbe6df] bg-white px-3 text-xs font-semibold text-[#315448]"><option>Novo</option><option>Em contato</option><option>Respondeu</option><option>Qualificado</option></select><span className="text-xs font-semibold text-[#667970]">Próximo: {lead.nextContact}</span></div><Button onClick={() => onSend(lead)} className="h-12 w-full rounded-xl bg-[#22a568] hover:bg-[#198a56]"><MessageCircle className="mr-2 size-5" />Abrir conversa no WhatsApp</Button><section><h3 className="text-xs font-bold uppercase tracking-[.12em] text-[#83928b]">Informações</h3><div className="mt-3 divide-y divide-[#e8eeea] rounded-xl border border-[#e1e9e4]"><Info label="WhatsApp" value={lead.phone} /><Info label="E-mail" value={lead.email || "Não informado"} /><Info label="Interesse" value={lead.interest} /></div></section><section><div className="flex items-center justify-between gap-3"><h3 className="text-xs font-bold uppercase tracking-[.12em] text-[#83928b]">Tags</h3><ContactTagSelector contact={lead} tags={tags} onUpdated={(tagIds) => onTagsUpdated(lead.id, tagIds)} /></div><div className="mt-3"><ContactTagBadges contact={lead} tags={tags} /></div></section><section><h3 className="text-xs font-bold uppercase tracking-[.12em] text-[#83928b]">Histórico</h3><div className="mt-4 space-y-5">{timeline.map((item) => <div key={item.id} className="flex gap-3"><span className="mt-1.5 size-2 rounded-full bg-[#93c83e] ring-4 ring-[#edf6e5]" /><div><p className="text-sm font-bold">{item.title}</p><p className="mt-1 text-xs text-[#75867e]">{item.detail}</p><p className="mt-1 text-[11px] text-[#9aa7a1]">{item.time}</p></div></div>)}</div></section>{lead.note && <section className="rounded-xl bg-[#f2f6f3] p-4"><div className="mb-1 flex items-center gap-2 text-xs font-bold"><CircleHelp className="size-4" />Observação</div><p className="text-sm text-[#61736b]">{lead.note}</p></section>}<Button variant="outline" onClick={() => onDelete(lead)} className="w-full border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"><Trash2 className="mr-2 size-4" />Excluir contato</Button></div></SheetContent></Sheet>;
 }
 
 function NotificationsSheet({ open, onClose, notifications, onSelect }: { open: boolean; onClose: () => void; notifications: AppNotification[]; onSelect: (item: AppNotification) => void }) {
