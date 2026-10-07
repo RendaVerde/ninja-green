@@ -38,14 +38,16 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Sessão expirada." }, { status: 401 });
 
-  const [contactsResult, sequencesResult, linksResult, messagesResult] = await Promise.all([
-    supabase.from("contacts").select("id,name,phone,email,kind,interest,origin,status,note,created_at").order("created_at", { ascending: false }),
-    supabase.from("sequences").select("id,name,audience,pause_on_reply,active").eq("active", true).order("created_at", { ascending: true }).limit(1),
+  const [contactsResult, sequencesResult, linksResult, messagesResult, tagsResult, contactTagsResult] = await Promise.all([
+    supabase.from("contacts").select("id,name,phone,email,kind,interest,origin,status,note,created_at").eq("owner_id", user.id).order("created_at", { ascending: false }),
+    supabase.from("sequences").select("id,name,audience,pause_on_reply,active,created_at,updated_at").eq("owner_id", user.id).order("created_at", { ascending: true }),
     supabase.from("contact_sequences").select("contact_id,next_run_at,paused_at,completed_at").is("completed_at", null),
-    supabase.from("messages").select("id,contact_id,direction,body,status,sent_at,created_at").order("created_at", { ascending: false }).limit(100),
+    supabase.from("messages").select("id,contact_id,direction,body,status,sent_at,created_at").eq("owner_id", user.id).order("created_at", { ascending: false }).limit(100),
+    supabase.from("tags").select("id,name,color,created_at,updated_at").eq("user_id", user.id).order("name"),
+    supabase.from("contact_tags").select("contact_id,tag_id").eq("user_id", user.id),
   ]);
 
-  const queryError = contactsResult.error || sequencesResult.error || linksResult.error || messagesResult.error;
+  const queryError = contactsResult.error || sequencesResult.error || linksResult.error || messagesResult.error || tagsResult.error || contactTagsResult.error;
   if (queryError) return NextResponse.json({ error: "Não foi possível carregar seus dados." }, { status: 500 });
 
   const links = linksResult.data || [];
@@ -64,6 +66,7 @@ export async function GET() {
       origin: contact.origin,
       status: contact.status,
       note: contact.note || "",
+      tagIds: (contactTagsResult.data || []).filter((link) => link.contact_id === contact.id).map((link) => link.tag_id),
       nextRunAt: link?.next_run_at || null,
       lastContactAt: latestMessage?.sent_at || latestMessage?.created_at || null,
       nextContact: formatMoment(link?.next_run_at),
@@ -78,7 +81,7 @@ export async function GET() {
     };
   });
 
-  const sequenceRow = sequencesResult.data?.[0];
+  const sequenceRow = sequencesResult.data?.find((item) => item.active);
   let sequence = null;
   if (sequenceRow) {
     const { data: steps, error } = await supabase.from("sequence_steps").select("id,delay_days,title,message_template,enabled,position").eq("sequence_id", sequenceRow.id).order("position");
@@ -92,5 +95,18 @@ export async function GET() {
     };
   }
 
-  return NextResponse.json({ contacts, sequence });
+  return NextResponse.json({
+    contacts,
+    sequence,
+    sequences: (sequencesResult.data || []).map((item) => ({
+      id: item.id,
+      name: item.name,
+      audience: item.audience,
+      pauseOnReply: item.pause_on_reply,
+      active: item.active,
+      createdAt: item.created_at,
+      updatedAt: item.updated_at,
+    })),
+    tags: tagsResult.data || [],
+  });
 }
