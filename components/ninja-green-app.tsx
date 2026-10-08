@@ -2,9 +2,10 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   ArrowDown, ArrowUp, Bell, CalendarClock, Check, ChevronRight, CircleHelp, Clock3, Copy, Inbox, LayoutDashboard, Loader2,
-  Leaf, ListChecks, LogOut, MessageCircle, MoreHorizontal, Plus, Search, Send, Settings,
+  Leaf, ListChecks, LogOut, MessageCircle, Plus, Search, Send, Settings,
   Sparkles, Target, Trash2, TrendingUp, UserCog, UserRound, UsersRound, Zap,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -12,6 +13,7 @@ import { MoveConfirmDialog } from "@/components/sequences/move-confirm-dialog";
 import { MessageTemplateEditor } from "@/components/sequences/message-template-editor";
 import { SequenceAudiencePicker } from "@/components/sequences/sequence-audience-picker";
 import { SequenceSwitcher } from "@/components/sequences/sequence-switcher";
+import { OverlayBackButton } from "@/components/overlay-back-button";
 import { ContactTagBadges, ContactTagSelector } from "@/components/tags/contact-tag-selector";
 import { TagManager } from "@/components/tags/tag-manager";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
@@ -24,12 +26,16 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Toaster } from "@/components/ui/sonner";
 import { ProfileDialog, UserProfile } from "@/components/profile-dialog";
+import { QuickMessagesView } from "@/components/quick-messages/quick-messages-view";
 import { WhatsAppConnections } from "@/components/whatsapp-connections";
 import type { AudienceConflict, SequenceAudience } from "@/lib/audience";
 import { defaultSequence, type ContactTag, type FollowUpSequence, Lead, LeadKind, LeadStatus, SequenceStep } from "@/lib/demo-data";
 import { renderMessageTemplate } from "@/lib/message-variables";
+import { buildWhatsAppUrl } from "@/lib/whatsapp";
+import { useBackClosable } from "@/hooks/use-back-closable";
 
-type View = "inicio" | "contatos" | "sequencias" | "conexoes";
+type View = "inicio" | "contatos" | "sequencias" | "mensagens" | "conexoes";
+type ContactListFilter = "Todos" | LeadKind | "Pendentes" | "Respondeu" | "Qualificado";
 type AppNotification = { id: string; title: string; detail: string; leadId?: string; urgent?: boolean };
 type AppDataPayload = {
   error?: string;
@@ -46,6 +52,13 @@ const statusStyle: Record<LeadStatus, string> = {
   Respondeu: "bg-violet-50 text-violet-700 border-violet-100",
   Qualificado: "bg-emerald-50 text-emerald-700 border-emerald-100",
 };
+
+const contactFilterOptions: readonly ContactListFilter[] = ["Todos", "Cliente", "Licenciado", "Pendentes", "Respondeu", "Qualificado"];
+const contactFilterParam: Record<ContactListFilter, string> = { Todos: "all", Cliente: "client", Licenciado: "licensee", Pendentes: "pending", Respondeu: "replied", Qualificado: "qualified" };
+
+function parseContactFilter(value: string | null): ContactListFilter {
+  return (Object.entries(contactFilterParam).find(([, parameter]) => parameter === value)?.[0] as ContactListFilter | undefined) || "Todos";
+}
 
 function Logo({ compact = false }: { compact?: boolean }) {
   return <div className="flex items-center gap-3"><span className="grid size-10 place-items-center rounded-xl bg-[#b7e64a] text-[#063d2e] shadow-[0_8px_24px_rgba(6,61,46,.22)]"><Leaf className="size-5" /></span>{!compact && <div><strong className="block text-[17px] leading-5 tracking-tight text-white">Ninja Green</strong><span className="text-[11px] text-emerald-100/65">Follow-up inteligente</span></div>}</div>;
@@ -78,7 +91,7 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
   const [messageLead, setMessageLead] = useState<Lead | null>(null);
   const [messageBody, setMessageBody] = useState("");
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<"Todos" | LeadKind>("Todos");
+  const [filter, setFilter] = useState<ContactListFilter>("Todos");
   const [tags, setTags] = useState<ContactTag[]>([]);
   const [sequences, setSequences] = useState<FollowUpSequence[]>([]);
   const [sequence, setSequence] = useState(defaultSequence);
@@ -110,6 +123,17 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
     const initialTimer = window.setTimeout(refreshClock, 0);
     const interval = window.setInterval(refreshClock, 60_000);
     return () => { window.clearTimeout(initialTimer); window.clearInterval(interval); };
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const parameters = new URLSearchParams(window.location.search);
+      if (parameters.get("view") === "contatos") {
+        setFilter(parseContactFilter(parameters.get("filter")));
+        setView("contatos");
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -175,10 +199,13 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
   }, [loadData]);
 
   const visibleLeads = useMemo(() => leads.filter((lead) => {
-    const matchesKind = filter === "Todos" || lead.kind === filter;
+    const matchesFilter = filter === "Todos"
+      || lead.kind === filter
+      || (filter === "Pendentes" && currentTime !== null && Boolean(lead.nextRunAt) && new Date(lead.nextRunAt!).getTime() <= currentTime)
+      || lead.status === filter;
     const term = search.toLowerCase();
-    return matchesKind && `${lead.name} ${lead.phone} ${lead.interest}`.toLowerCase().includes(term);
-  }), [leads, search, filter]);
+    return matchesFilter && `${lead.name} ${lead.phone} ${lead.interest}`.toLowerCase().includes(term);
+  }), [currentTime, leads, search, filter]);
 
   const notifications = useMemo<AppNotification[]>(() => {
     const items = leads.flatMap((lead) => {
@@ -297,6 +324,28 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
     }
   }
 
+  function contactListHref(nextFilter: ContactListFilter) {
+    return `/?view=contatos&filter=${contactFilterParam[nextFilter]}`;
+  }
+
+  function openContacts(nextFilter: ContactListFilter = "Todos") {
+    setFilter(nextFilter);
+    setSearch("");
+    setView("contatos");
+    window.history.pushState({ ...window.history.state }, "", contactListHref(nextFilter));
+  }
+
+  function changeContactFilter(nextFilter: ContactListFilter) {
+    setFilter(nextFilter);
+    window.history.replaceState({ ...window.history.state }, "", contactListHref(nextFilter));
+  }
+
+  function registerCreatedTag(tag: ContactTag) {
+    setTags((items) => items.some((item) => item.id === tag.id)
+      ? items.map((item) => item.id === tag.id ? { ...item, ...tag } : item)
+      : [...items, tag].sort((a, b) => a.name.localeCompare(b.name, "pt-BR")));
+  }
+
   function updateContactTags(contactId: string, tagIds: string[]) {
     const nextLeads = leads.map((lead) => lead.id === contactId ? { ...lead, tagIds } : lead);
     setLeads(nextLeads);
@@ -337,9 +386,9 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
 
   async function openWhatsApp() {
     if (!messageLead || !messageBody.trim()) return;
-    const digits = messageLead.phone.replace(/\D/g, "");
-    const phone = digits.length === 10 || digits.length === 11 ? `55${digits}` : digits;
-    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(messageBody.trim())}`, "_blank", "noopener,noreferrer");
+    const whatsappUrl = buildWhatsAppUrl(messageLead.phone, messageBody);
+    if (!whatsappUrl) return toast.error("O contato não possui um WhatsApp válido.");
+    window.open(whatsappUrl, "_blank", "noopener,noreferrer");
     const lead = messageLead;
     setMessageLead(null);
     const response = await fetch("/api/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contactId: lead.id, body: messageBody.trim() }) });
@@ -362,6 +411,7 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
           <Nav icon={LayoutDashboard} label="Visão geral" active={view === "inicio"} onClick={() => setView("inicio")} />
           <Nav icon={UsersRound} label="Contatos" active={view === "contatos"} onClick={() => setView("contatos")} count={leads.length} />
           <Nav icon={ListChecks} label="Sequências" active={view === "sequencias"} onClick={() => setView("sequencias")} />
+          <Nav icon={Send} label="Mensagens rápidas" active={view === "mensagens"} onClick={() => setView("mensagens")} />
           <Nav icon={MessageCircle} label="Conexões" active={view === "conexoes"} onClick={() => setView("conexoes")} />
           {isAdmin && <button onClick={() => router.push("/admin")} className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium text-emerald-50/65 transition hover:bg-white/[.06] hover:text-white"><UserCog className="size-[18px]" /><span>Usuários</span><Badge className="ml-auto bg-[#b7e64a] text-[#15372d] hover:bg-[#b7e64a]">Web</Badge></button>}
         </nav>
@@ -384,17 +434,18 @@ export function NinjaGreenApp({ currentUser, isAdmin, authEnabled }: NinjaGreenA
         </header>
 
         <div className="mx-auto max-w-[1280px] px-4 py-6 sm:px-7 lg:px-10 lg:py-9">
-          {view === "inicio" && <Dashboard leads={leads} loading={dataLoading} currentTime={currentTime} userName={firstName} onAdd={() => setAddOpen(true)} onSelect={setSelected} onSend={sendMessage} onViewContacts={() => setView("contatos")} />}
-          {view === "contatos" && <Contacts leads={visibleLeads} search={search} setSearch={setSearch} filter={filter} setFilter={setFilter} onAdd={() => setAddOpen(true)} onSelect={setSelected} />}
-          {view === "sequencias" && <Sequences sequences={sequences} sequenceId={sequenceId} steps={sequence} setSteps={(steps) => { setSequence(steps); setSequenceDirty(true); }} name={sequenceName} setName={(name) => { setSequenceName(name); setSequenceDirty(true); }} audience={sequenceAudience} setAudience={(audience) => { setSequenceAudience(audience); setSequenceDirty(true); }} pauseOnReply={pauseOnReply} setPauseOnReply={(pause) => { setPauseOnReply(pause); setSequenceDirty(true); }} active={sequenceActive} setActive={(active) => { setSequenceActive(active); setSequenceDirty(true); }} tags={tags} leads={leads} selectedTagIds={sequenceTagIds} setSelectedTagIds={(ids) => { setSequenceTagIds(ids); setSequenceDirty(true); }} selectedContactIds={sequenceContactIds} setSelectedContactIds={(ids) => { setSequenceContactIds(ids); setSequenceDirty(true); }} dirty={sequenceDirty} onSelect={requestSequenceDraft} onCreate={() => requestSequenceDraft("__new__")} onDuplicate={duplicateSequence} onManageTags={() => setTagManagerOpen(true)} onSave={() => void persistSequence()} saving={sequenceSaving} />}
+          {view === "inicio" && <Dashboard leads={leads} loading={dataLoading} currentTime={currentTime} userName={firstName} onAdd={() => setAddOpen(true)} onSelect={setSelected} onSend={sendMessage} onViewContacts={openContacts} />}
+          {view === "contatos" && <Contacts leads={visibleLeads} search={search} setSearch={setSearch} filter={filter} setFilter={changeContactFilter} onAdd={() => setAddOpen(true)} onSelect={setSelected} />}
+          {view === "sequencias" && <Sequences sequences={sequences} sequenceId={sequenceId} steps={sequence} setSteps={(steps) => { setSequence(steps); setSequenceDirty(true); }} name={sequenceName} setName={(name) => { setSequenceName(name); setSequenceDirty(true); }} audience={sequenceAudience} setAudience={(audience) => { setSequenceAudience(audience); setSequenceDirty(true); }} pauseOnReply={pauseOnReply} setPauseOnReply={(pause) => { setPauseOnReply(pause); setSequenceDirty(true); }} active={sequenceActive} setActive={(active) => { setSequenceActive(active); setSequenceDirty(true); }} tags={tags} leads={leads} selectedTagIds={sequenceTagIds} setSelectedTagIds={(ids) => { setSequenceTagIds(ids); setSequenceDirty(true); }} selectedContactIds={sequenceContactIds} setSelectedContactIds={(ids) => { setSequenceContactIds(ids); setSequenceDirty(true); }} dirty={sequenceDirty} onSelect={requestSequenceDraft} onCreate={() => requestSequenceDraft("__new__")} onDuplicate={duplicateSequence} onTagCreated={registerCreatedTag} onManageTags={() => setTagManagerOpen(true)} onSave={() => void persistSequence()} saving={sequenceSaving} />}
+          {view === "mensagens" && <QuickMessagesView contacts={leads} tags={tags} onTagCreated={registerCreatedTag} onManageTags={() => setTagManagerOpen(true)} onActivitiesRecorded={() => void loadData()} />}
           {view === "conexoes" && <WhatsAppConnections />}
         </div>
       </main>
 
-      <MobileNav view={view} setView={setView} onAdd={() => setAddOpen(true)} onProfile={() => setProfileOpen(true)} />
+      <MobileNav view={view} setView={setView} onAdd={() => setAddOpen(true)} />
       <AddLeadDialog open={addOpen} setOpen={setAddOpen} onAdd={addLead} tags={tags} />
-      <LeadSheet lead={selected} tags={tags} onTagsUpdated={updateContactTags} onClose={() => setSelected(null)} onSend={sendMessage} onStatusChange={updateLeadStatus} onDelete={deleteLead} />
-      <NotificationsSheet open={notificationsOpen} onClose={() => setNotificationsOpen(false)} notifications={notifications} onSelect={(item) => { setNotificationsOpen(false); if (item.leadId) setSelected(leads.find((lead) => lead.id === item.leadId) || null); else setAddOpen(true); }} />
+      <LeadSheet lead={selected} tags={tags} onTagsUpdated={updateContactTags} onTagCreated={registerCreatedTag} onClose={() => setSelected(null)} onSend={sendMessage} onStatusChange={updateLeadStatus} onDelete={deleteLead} />
+      <NotificationsSheet open={notificationsOpen} onClose={() => setNotificationsOpen(false)} notifications={notifications} onSelect={(item) => { if (item.leadId) setSelected(leads.find((lead) => lead.id === item.leadId) || null); else setAddOpen(true); }} />
       <MessageDialog lead={messageLead} body={messageBody} setBody={setMessageBody} onClose={() => setMessageLead(null)} onConfirm={openWhatsApp} />
       <ProfileDialog open={profileOpen} onOpenChange={setProfileOpen} profile={profile} onUpdated={setProfile} />
       <TagManager open={tagManagerOpen} onOpenChange={setTagManagerOpen} tags={tags} onTagsChange={setTags} onTagDeleted={handleTagDeleted} />
@@ -409,13 +460,13 @@ function Nav({ icon: Icon, label, active, onClick, count }: { icon: typeof Layou
   return <button onClick={onClick} className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-medium transition ${active ? "bg-white/10 text-white" : "text-emerald-50/65 hover:bg-white/[.06] hover:text-white"}`}><Icon className={`size-[18px] ${active ? "text-[#b7e64a]" : ""}`} /><span>{label}</span>{count !== undefined && <span className="ml-auto rounded-full bg-white/10 px-2 py-0.5 text-[11px]">{count}</span>}</button>;
 }
 
-function MobileNav({ view, setView, onAdd, onProfile }: { view: View; setView: (v: View) => void; onAdd: () => void; onProfile: () => void }) {
+function MobileNav({ view, setView, onAdd }: { view: View; setView: (v: View) => void; onAdd: () => void }) {
   return <nav className="fixed inset-x-0 bottom-0 z-30 grid h-[74px] grid-cols-5 items-center border-t border-[#dbe6df] bg-white/95 px-2 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_30px_rgba(20,55,45,.08)] backdrop-blur-xl lg:hidden">
     <MobileItem icon={LayoutDashboard} label="Início" active={view === "inicio"} onClick={() => setView("inicio")} />
     <MobileItem icon={UsersRound} label="Contatos" active={view === "contatos"} onClick={() => setView("contatos")} />
     <button onClick={onAdd} aria-label="Novo contato" className="mx-auto grid size-12 -translate-y-3 place-items-center rounded-2xl bg-[#93c83e] text-[#063d2e] shadow-[0_10px_24px_rgba(79,126,25,.28)]"><Plus className="size-6" /></button>
     <MobileItem icon={ListChecks} label="Cadência" active={view === "sequencias"} onClick={() => setView("sequencias")} />
-    <MobileItem icon={UserRound} label="Perfil" active={false} onClick={onProfile} />
+    <MobileItem icon={Send} label="Mensagens" active={view === "mensagens"} onClick={() => setView("mensagens")} />
   </nav>;
 }
 
@@ -423,7 +474,7 @@ function MobileItem({ icon: Icon, label, active, onClick }: { icon: typeof Layou
   return <button onClick={onClick} className={`flex flex-col items-center gap-1 text-[10px] font-medium ${active ? "text-[#0b553f]" : "text-[#7a8b84]"}`}><Icon className="size-5" />{label}</button>;
 }
 
-function Dashboard({ leads, loading, currentTime, userName, onAdd, onSelect, onSend, onViewContacts }: { leads: Lead[]; loading: boolean; currentTime: number | null; userName: string; onAdd: () => void; onSelect: (l: Lead) => void; onSend: (l: Lead) => void; onViewContacts: () => void }) {
+function Dashboard({ leads, loading, currentTime, userName, onAdd, onSelect, onSend, onViewContacts }: { leads: Lead[]; loading: boolean; currentTime: number | null; userName: string; onAdd: () => void; onSelect: (l: Lead) => void; onSend: (l: Lead) => void; onViewContacts: (filter?: ContactListFilter) => void }) {
   const dueToday = currentTime === null ? 0 : leads.filter((lead) => lead.nextRunAt && new Date(lead.nextRunAt).getTime() <= currentTime).length;
   const replies = leads.filter((lead) => lead.status === "Respondeu").length;
   const qualified = leads.filter((lead) => lead.status === "Qualificado").length;
@@ -437,15 +488,15 @@ function Dashboard({ leads, loading, currentTime, userName, onAdd, onSelect, onS
     </section>
 
     <section className="mt-7 grid grid-cols-2 gap-3 xl:grid-cols-4">
-      <Metric icon={UsersRound} label="Em acompanhamento" value={String(leads.length)} note="Contatos reais da sua conta" />
-      <Metric icon={CalendarClock} label="Follow-ups pendentes" value={String(dueToday)} note="Agendamentos vencidos ou para hoje" accent />
-      <Metric icon={MessageCircle} label="Respostas" value={String(replies)} note="Contatos marcados como respondidos" />
-      <Metric icon={Target} label="Qualificação" value={`${conversion}%`} note={`${qualified} contatos qualificados`} />
+      <Metric href="/?view=contatos&filter=all" onClick={() => onViewContacts("Todos")} icon={UsersRound} label="Em acompanhamento" value={String(leads.length)} note="Contatos reais da sua conta" />
+      <Metric href="/?view=contatos&filter=pending" onClick={() => onViewContacts("Pendentes")} icon={CalendarClock} label="Follow-ups pendentes" value={String(dueToday)} note="Agendamentos vencidos ou para hoje" accent />
+      <Metric href="/?view=contatos&filter=replied" onClick={() => onViewContacts("Respondeu")} icon={MessageCircle} label="Respostas" value={String(replies)} note="Contatos marcados como respondidos" />
+      <Metric href="/?view=contatos&filter=qualified" onClick={() => onViewContacts("Qualificado")} icon={Target} label="Qualificação" value={`${conversion}%`} note={`${qualified} contatos qualificados`} />
     </section>
 
     <section className="mt-6 grid gap-5 xl:grid-cols-[1.45fr_.85fr]">
       <div className="rounded-2xl border border-[#dfe8e2] bg-white shadow-[0_10px_40px_rgba(18,60,47,.05)]">
-        <div className="flex items-center justify-between border-b border-[#e7ede9] p-5 sm:p-6"><div><h2 className="font-bold text-[#173d31]">Prioridades de hoje</h2><p className="mt-1 text-xs text-[#778780]">Contatos ordenados pelo melhor momento de agir</p></div><Button variant="ghost" size="sm" onClick={onViewContacts} className="text-[#0b553f]">Ver todos</Button></div>
+        <div className="flex items-center justify-between border-b border-[#e7ede9] p-5 sm:p-6"><div><h2 className="font-bold text-[#173d31]">Prioridades de hoje</h2><p className="mt-1 text-xs text-[#778780]">Contatos ordenados pelo melhor momento de agir</p></div><Button asChild variant="ghost" size="sm" className="text-[#0b553f]"><Link href="/?view=contatos&filter=all" onClick={(event) => { event.preventDefault(); onViewContacts("Todos"); }}>Ver todos</Link></Button></div>
         <div className="divide-y divide-[#edf1ef]">{loading && <div className="grid place-items-center py-16 text-[#71827a]"><Loader2 className="mb-3 size-6 animate-spin" /><span className="text-sm">Carregando sua operação…</span></div>}{!loading && leads.slice(0, 3).map((lead, index) => <div key={lead.id} className="flex items-center gap-3 p-4 sm:px-6 sm:py-5"><div className="hidden w-5 text-xs font-bold text-[#9baaA3] sm:block">0{index + 1}</div><Avatar name={lead.name} /><button onClick={() => onSelect(lead)} className="min-w-0 flex-1 text-left"><div className="truncate text-sm font-bold text-[#173d31]">{lead.name}</div><div className="mt-1 flex items-center gap-2 text-xs text-[#73847c]"><span>{lead.kind}</span><span>·</span><span className="truncate">{lead.interest}</span></div></button><div className="hidden text-right sm:block"><div className="text-xs font-semibold text-[#173d31]">{lead.nextContact}</div><div className="mt-1"><Status value={lead.status} /></div></div><Button onClick={() => onSend(lead)} size="icon" variant="ghost" aria-label={`Enviar mensagem para ${lead.name}`} className="rounded-full bg-[#eaf4e3] text-[#397138] hover:bg-[#dceecd]"><Send className="size-4" /></Button></div>)}{!loading && leads.length === 0 && <div className="px-6 py-14 text-center"><Inbox className="mx-auto mb-3 size-8 text-[#9aaaA3]" /><p className="font-semibold">Sua operação começa aqui</p><p className="mt-1 text-sm text-[#75867e]">Cadastre o primeiro contato para alimentar o painel.</p></div>}</div>
       </div>
       <div className="space-y-5">
@@ -456,16 +507,16 @@ function Dashboard({ leads, loading, currentTime, userName, onAdd, onSelect, onS
   </>;
 }
 
-function Metric({ icon: Icon, label, value, note, accent }: { icon: typeof UsersRound; label: string; value: string; note: string; accent?: boolean }) {
-  return <div className={`rounded-2xl border p-4 sm:p-5 ${accent ? "border-[#cfe0ae] bg-[#eef7dd]" : "border-[#dfe8e2] bg-white"}`}><div className="flex items-center justify-between"><span className={`grid size-9 place-items-center rounded-xl ${accent ? "bg-[#d9edb4] text-[#456f16]" : "bg-[#edf3ef] text-[#477061]"}`}><Icon className="size-[18px]" /></span><MoreHorizontal className="size-4 text-[#9aaaA3]" /></div><div className="mt-5 text-2xl font-extrabold tracking-tight sm:text-3xl">{value}</div><div className="mt-1 text-xs font-semibold text-[#536b61] sm:text-sm">{label}</div><div className="mt-2 hidden text-[11px] text-[#809087] sm:block">{note}</div></div>;
+function Metric({ href, onClick, icon: Icon, label, value, note, accent }: { href: string; onClick: () => void; icon: typeof UsersRound; label: string; value: string; note: string; accent?: boolean }) {
+  return <Link href={href} onClick={(event) => { event.preventDefault(); onClick(); }} className={`rounded-2xl border p-4 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0b553f] focus-visible:ring-offset-2 active:scale-[.98] sm:p-5 ${accent ? "border-[#cfe0ae] bg-[#eef7dd] hover:bg-[#e6f3cf]" : "border-[#dfe8e2] bg-white hover:border-[#b9ccbf] hover:bg-[#f9fbfa]"}`}><div className="flex items-center justify-between"><span className={`grid size-9 place-items-center rounded-xl ${accent ? "bg-[#d9edb4] text-[#456f16]" : "bg-[#edf3ef] text-[#477061]"}`}><Icon className="size-[18px]" /></span><ChevronRight className="size-4 text-[#7d9187]" /></div><div className="mt-5 text-2xl font-extrabold tracking-tight sm:text-3xl">{value}</div><div className="mt-1 text-xs font-semibold text-[#536b61] sm:text-sm">{label}</div><div className="mt-2 hidden text-[11px] text-[#809087] sm:block">{note}</div></Link>;
 }
 
 function Funnel({ label, value, width }: { label: string; value: number; width: string }) { return <div><div className="mb-1.5 flex justify-between text-xs text-emerald-50/75"><span>{label}</span><b className="text-white">{value}</b></div><div className="h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-[#b7e64a]" style={{ width }} /></div></div>; }
 function Activity({ name, detail }: { name: string; detail: string }) { return <div className="flex gap-3"><span className="mt-1.5 size-2 shrink-0 rounded-full bg-[#93c83e] ring-4 ring-[#edf6e5]" /><div><p className="text-xs font-bold text-[#25483c]">{name}</p><p className="mt-0.5 text-[11px] text-[#7e8d86]">{detail}</p></div></div>; }
 
-function Contacts({ leads, search, setSearch, filter, setFilter, onAdd, onSelect }: { leads: Lead[]; search: string; setSearch: (v: string) => void; filter: "Todos" | LeadKind; setFilter: (v: "Todos" | LeadKind) => void; onAdd: () => void; onSelect: (l: Lead) => void }) {
+function Contacts({ leads, search, setSearch, filter, setFilter, onAdd, onSelect }: { leads: Lead[]; search: string; setSearch: (v: string) => void; filter: ContactListFilter; setFilter: (v: ContactListFilter) => void; onAdd: () => void; onSelect: (l: Lead) => void }) {
   return <><div className="flex items-end justify-between gap-4"><div><p className="text-sm font-semibold text-[#789087]">Relacionamento</p><h1 className="mt-1 text-3xl font-bold tracking-[-.035em]">Seus contatos</h1><p className="mt-2 text-sm text-[#71827a]">Tudo o que você precisa para não perder uma oportunidade.</p></div><Button onClick={onAdd} className="hidden h-11 rounded-xl bg-[#0b553f] sm:flex"><Plus className="mr-2 size-4" />Novo contato</Button></div>
-  <div className="mt-7 rounded-2xl border border-[#dfe8e2] bg-white p-4 sm:p-6"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="relative flex-1 sm:max-w-md"><Search className="absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-[#82928b]" /><Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar por nome, telefone ou interesse" className="h-11 rounded-xl border-[#dce6e0] bg-[#f8faf9] pl-10" /></div><div className="flex gap-2">{(["Todos", "Cliente", "Licenciado"] as const).map((item) => <button key={item} onClick={() => setFilter(item)} className={`rounded-full border px-3 py-2 text-xs font-semibold ${filter === item ? "border-[#0b553f] bg-[#0b553f] text-white" : "border-[#dfe8e2] text-[#61756c]"}`}>{item}</button>)}</div></div>
+  <div className="mt-7 rounded-2xl border border-[#dfe8e2] bg-white p-4 sm:p-6"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="relative flex-1 sm:max-w-md"><Search className="absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-[#82928b]" /><Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar por nome, telefone ou interesse" className="h-11 rounded-xl border-[#dce6e0] bg-[#f8faf9] pl-10" /></div><div className="flex gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible">{contactFilterOptions.map((item) => <button key={item} onClick={() => setFilter(item)} className={`rounded-full border px-3 py-2 text-xs font-semibold ${filter === item ? "border-[#0b553f] bg-[#0b553f] text-white" : "border-[#dfe8e2] text-[#61756c]"}`}>{item}</button>)}</div></div>
   <div className="mt-5 divide-y divide-[#edf1ef]">{leads.map((lead) => <button key={lead.id} onClick={() => onSelect(lead)} className="flex w-full items-center gap-3 py-4 text-left hover:bg-[#f8faf8] sm:px-2"><Avatar name={lead.name} /><div className="min-w-0 flex-1"><div className="truncate text-sm font-bold">{lead.name}</div><div className="mt-1 truncate text-xs text-[#77877f]">{lead.phone} · {lead.interest}</div></div><div className="hidden sm:block"><Status value={lead.status} /></div><div className="hidden w-28 text-right text-xs text-[#65786f] md:block">{lead.nextContact}</div><ChevronRight className="size-4 text-[#9babA4]" /></button>)}{leads.length === 0 && <div className="py-16 text-center text-sm text-[#7a8a83]">Nenhum contato encontrado.</div>}</div></div></>;
 }
 
@@ -492,12 +543,13 @@ type SequenceProps = {
   onSelect: (id: string) => void;
   onCreate: () => void;
   onDuplicate: () => void;
+  onTagCreated: (tag: ContactTag) => void;
   onManageTags: () => void;
   onSave: () => void;
   saving: boolean;
 };
 
-function Sequences({ sequences, sequenceId, steps, setSteps, name, setName, audience, setAudience, pauseOnReply, setPauseOnReply, active, setActive, tags, leads, selectedTagIds, setSelectedTagIds, selectedContactIds, setSelectedContactIds, dirty, onSelect, onCreate, onDuplicate, onManageTags, onSave, saving }: SequenceProps) {
+function Sequences({ sequences, sequenceId, steps, setSteps, name, setName, audience, setAudience, pauseOnReply, setPauseOnReply, active, setActive, tags, leads, selectedTagIds, setSelectedTagIds, selectedContactIds, setSelectedContactIds, dirty, onSelect, onCreate, onDuplicate, onTagCreated, onManageTags, onSave, saving }: SequenceProps) {
   const updateStep = (id: string, patch: Partial<SequenceStep>) => setSteps(steps.map((step) => step.id === id ? { ...step, ...patch } : step));
   const moveStep = (index: number, direction: -1 | 1) => {
     const target = index + direction;
@@ -542,7 +594,7 @@ function Sequences({ sequences, sequenceId, steps, setSteps, name, setName, audi
       <div className="min-w-0 space-y-5">
         <section className="rounded-2xl border border-[#dfe8e2] bg-white p-5 sm:p-6">
           <Field label="Nome da sequência"><Input value={name} onChange={(event) => setName(event.target.value)} /></Field>
-          <div className="mt-5"><SequenceAudiencePicker audience={audience} onAudienceChange={setAudience} tags={tags} selectedTagIds={selectedTagIds} onTagIdsChange={setSelectedTagIds} contacts={leads} selectedContactIds={selectedContactIds} onContactIdsChange={setSelectedContactIds} onManageTags={onManageTags} /></div>
+          <div className="mt-5"><SequenceAudiencePicker audience={audience} onAudienceChange={setAudience} tags={tags} selectedTagIds={selectedTagIds} onTagIdsChange={setSelectedTagIds} contacts={leads} selectedContactIds={selectedContactIds} onContactIdsChange={setSelectedContactIds} onTagCreated={onTagCreated} onManageTags={onManageTags} /></div>
           <div className="mt-4 flex items-center justify-between rounded-xl bg-[#f3f7f4] p-4">
             <div><p className="text-sm font-bold">Pausar quando o contato responder</p><p className="mt-1 text-xs text-[#71837a]">Evita mensagens automáticas depois que a conversa começou.</p></div>
             <Switch checked={pauseOnReply} onCheckedChange={setPauseOnReply} />
@@ -572,14 +624,64 @@ function AddLeadDialog({ open, setOpen, onAdd, tags }: { open: boolean; setOpen:
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="grid gap-1.5 text-xs font-semibold text-[#4f675d]">{label}{children}</label>; }
 
-function LeadSheet({ lead, tags, onTagsUpdated, onClose, onSend, onStatusChange, onDelete }: { lead: Lead | null; tags: ContactTag[]; onTagsUpdated: (contactId: string, tagIds: string[]) => void; onClose: () => void; onSend: (l: Lead) => void; onStatusChange: (lead: Lead, status: LeadStatus) => void; onDelete: (lead: Lead) => void }) {
+function LeadSheet({ lead, tags, onTagsUpdated, onTagCreated, onClose, onSend, onStatusChange, onDelete }: { lead: Lead | null; tags: ContactTag[]; onTagsUpdated: (contactId: string, tagIds: string[]) => void; onTagCreated: (tag: ContactTag) => void; onClose: () => void; onSend: (l: Lead) => void; onStatusChange: (lead: Lead, status: LeadStatus) => void; onDelete: (lead: Lead) => void }) {
+  const back = useBackClosable(Boolean(lead), onClose);
   if (!lead) return null;
   const timeline = lead.history?.length ? lead.history : [{ id: "created", title: "Contato cadastrado", detail: lead.origin, time: lead.createdAt ? new Date(lead.createdAt).toLocaleString("pt-BR") : "Agora" }];
-  return <Sheet open={!!lead} onOpenChange={(open) => !open && onClose()}><SheetContent className="w-full overflow-y-auto p-0 sm:max-w-[460px]"><div className="bg-[#083f31] p-7 text-white"><SheetHeader><div className="flex items-center gap-4"><span className="grid size-14 place-items-center rounded-full bg-[#b7e64a] text-base font-bold text-[#063d2e]">{lead.name.split(" ").slice(0, 2).map((p) => p[0]).join("")}</span><div><SheetTitle className="text-left text-xl text-white">{lead.name}</SheetTitle><SheetDescription className="mt-1 text-left text-emerald-50/65">{lead.kind} · {lead.origin}</SheetDescription></div></div></SheetHeader></div><div className="space-y-6 p-6"><div className="flex items-center justify-between gap-3"><select aria-label="Status do contato" value={lead.status} onChange={(event) => onStatusChange(lead, event.target.value as LeadStatus)} className="h-9 rounded-full border border-[#dbe6df] bg-white px-3 text-xs font-semibold text-[#315448]"><option>Novo</option><option>Em contato</option><option>Respondeu</option><option>Qualificado</option></select><span className="text-xs font-semibold text-[#667970]">Próximo: {lead.nextContact}</span></div><Button onClick={() => onSend(lead)} className="h-12 w-full rounded-xl bg-[#22a568] hover:bg-[#198a56]"><MessageCircle className="mr-2 size-5" />Abrir conversa no WhatsApp</Button><section><h3 className="text-xs font-bold uppercase tracking-[.12em] text-[#83928b]">Informações</h3><div className="mt-3 divide-y divide-[#e8eeea] rounded-xl border border-[#e1e9e4]"><Info label="WhatsApp" value={lead.phone} /><Info label="E-mail" value={lead.email || "Não informado"} /><Info label="Interesse" value={lead.interest} /></div></section><section><div className="flex items-center justify-between gap-3"><h3 className="text-xs font-bold uppercase tracking-[.12em] text-[#83928b]">Tags</h3><ContactTagSelector contact={lead} tags={tags} onUpdated={(tagIds) => onTagsUpdated(lead.id, tagIds)} /></div><div className="mt-3"><ContactTagBadges contact={lead} tags={tags} /></div></section><section><h3 className="text-xs font-bold uppercase tracking-[.12em] text-[#83928b]">Histórico</h3><div className="mt-4 space-y-5">{timeline.map((item) => <div key={item.id} className="flex gap-3"><span className="mt-1.5 size-2 rounded-full bg-[#93c83e] ring-4 ring-[#edf6e5]" /><div><p className="text-sm font-bold">{item.title}</p><p className="mt-1 text-xs text-[#75867e]">{item.detail}</p><p className="mt-1 text-[11px] text-[#9aa7a1]">{item.time}</p></div></div>)}</div></section>{lead.note && <section className="rounded-xl bg-[#f2f6f3] p-4"><div className="mb-1 flex items-center gap-2 text-xs font-bold"><CircleHelp className="size-4" />Observação</div><p className="text-sm text-[#61736b]">{lead.note}</p></section>}<Button variant="outline" onClick={() => onDelete(lead)} className="w-full border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"><Trash2 className="mr-2 size-4" />Excluir contato</Button></div></SheetContent></Sheet>;
-}
 
+  return (
+    <Sheet open={Boolean(lead)} onOpenChange={back.onOpenChange}>
+      <SheetContent showCloseButton={false} className="w-full overflow-y-auto p-0 sm:max-w-[460px]">
+        <div className="bg-[#083f31] p-4 text-white sm:p-7">
+          <SheetHeader className="p-0">
+            <div className="flex items-center gap-3">
+              <OverlayBackButton onClick={back.close} inverse />
+              <span className="grid size-12 place-items-center rounded-full bg-[#b7e64a] text-sm font-bold text-[#063d2e] sm:size-14 sm:text-base">{lead.name.split(" ").slice(0, 2).map((part) => part[0]).join("")}</span>
+              <div className="min-w-0"><SheetTitle className="truncate text-left text-xl text-white">{lead.name}</SheetTitle><SheetDescription className="mt-1 text-left text-emerald-50/65">{lead.kind} · {lead.origin}</SheetDescription></div>
+            </div>
+          </SheetHeader>
+        </div>
+        <div className="space-y-6 p-6">
+          <div className="flex items-center justify-between gap-3"><select aria-label="Status do contato" value={lead.status} onChange={(event) => onStatusChange(lead, event.target.value as LeadStatus)} className="h-9 rounded-full border border-[#dbe6df] bg-white px-3 text-xs font-semibold text-[#315448]"><option>Novo</option><option>Em contato</option><option>Respondeu</option><option>Qualificado</option></select><span className="text-xs font-semibold text-[#667970]">Próximo: {lead.nextContact}</span></div>
+          <Button onClick={() => onSend(lead)} className="h-12 w-full rounded-xl bg-[#22a568] hover:bg-[#198a56]"><MessageCircle className="mr-2 size-5" />Abrir conversa no WhatsApp</Button>
+          <section><h3 className="text-xs font-bold uppercase tracking-[.12em] text-[#83928b]">Informações</h3><div className="mt-3 divide-y divide-[#e8eeea] rounded-xl border border-[#e1e9e4]"><Info label="WhatsApp" value={lead.phone} /><Info label="E-mail" value={lead.email || "Não informado"} /><Info label="Interesse" value={lead.interest} /></div></section>
+          <section><div className="flex items-center justify-between gap-3"><h3 className="text-xs font-bold uppercase tracking-[.12em] text-[#83928b]">Tags</h3><ContactTagSelector contact={lead} tags={tags} onUpdated={(tagIds) => onTagsUpdated(lead.id, tagIds)} onTagCreated={onTagCreated} /></div><div className="mt-3"><ContactTagBadges contact={lead} tags={tags} /></div></section>
+          <section><h3 className="text-xs font-bold uppercase tracking-[.12em] text-[#83928b]">Histórico</h3><div className="mt-4 space-y-5">{timeline.map((item) => <div key={item.id} className="flex gap-3"><span className="mt-1.5 size-2 rounded-full bg-[#93c83e] ring-4 ring-[#edf6e5]" /><div><p className="text-sm font-bold">{item.title}</p><p className="mt-1 text-xs text-[#75867e]">{item.detail}</p><p className="mt-1 text-[11px] text-[#9aa7a1]">{item.time}</p></div></div>)}</div></section>
+          {lead.note && <section className="rounded-xl bg-[#f2f6f3] p-4"><div className="mb-1 flex items-center gap-2 text-xs font-bold"><CircleHelp className="size-4" />Observação</div><p className="text-sm text-[#61736b]">{lead.note}</p></section>}
+          <Button variant="outline" onClick={() => onDelete(lead)} className="w-full border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"><Trash2 className="mr-2 size-4" />Excluir contato</Button>
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
 function NotificationsSheet({ open, onClose, notifications, onSelect }: { open: boolean; onClose: () => void; notifications: AppNotification[]; onSelect: (item: AppNotification) => void }) {
-  return <Sheet open={open} onOpenChange={(value) => !value && onClose()}><SheetContent className="w-full sm:max-w-[420px]"><SheetHeader><SheetTitle>Notificações</SheetTitle><SheetDescription>Follow-ups e oportunidades que precisam da sua atenção.</SheetDescription></SheetHeader><div className="mt-6 space-y-3">{notifications.map((item) => <button key={item.id} onClick={() => onSelect(item)} className="flex w-full gap-3 rounded-xl border border-[#e1e9e4] p-4 text-left transition hover:bg-[#f5f8f6]"><span className={`mt-1 size-2.5 shrink-0 rounded-full ${item.urgent ? "bg-amber-500" : "bg-[#93c83e]"}`} /><span><strong className="block text-sm text-[#23483b]">{item.title}</strong><span className="mt-1 block text-xs leading-5 text-[#71827a]">{item.detail}</span></span></button>)}{notifications.length === 0 && <div className="rounded-xl bg-[#f3f7f4] px-5 py-10 text-center"><Check className="mx-auto size-7 text-[#62a02b]" /><p className="mt-3 text-sm font-bold">Tudo em dia</p><p className="mt-1 text-xs text-[#74867e]">Nenhuma ação pendente agora.</p></div>}</div></SheetContent></Sheet>;
+  const pendingSelection = useRef<AppNotification | null>(null);
+  const back = useBackClosable(open, () => {
+    onClose();
+    const selectedNotification = pendingSelection.current;
+    pendingSelection.current = null;
+    if (selectedNotification) onSelect(selectedNotification);
+  });
+
+  function selectNotification(item: AppNotification) {
+    pendingSelection.current = item;
+    back.close();
+  }
+
+  return (
+    <Sheet open={open} onOpenChange={back.onOpenChange}>
+      <SheetContent showCloseButton={false} className="w-full sm:max-w-[420px]">
+        <SheetHeader className="flex-row items-start border-b">
+          <OverlayBackButton onClick={back.close} />
+          <div className="min-w-0 pt-1"><SheetTitle>Notificações</SheetTitle><SheetDescription>Follow-ups e oportunidades que precisam da sua atenção.</SheetDescription></div>
+        </SheetHeader>
+        <div className="mt-2 space-y-3 px-4">
+          {notifications.map((item) => <button key={item.id} onClick={() => selectNotification(item)} className="flex w-full gap-3 rounded-xl border border-[#e1e9e4] p-4 text-left transition hover:bg-[#f5f8f6]"><span className={`mt-1 size-2.5 shrink-0 rounded-full ${item.urgent ? "bg-amber-500" : "bg-[#93c83e]"}`} /><span><strong className="block text-sm text-[#23483b]">{item.title}</strong><span className="mt-1 block text-xs leading-5 text-[#71827a]">{item.detail}</span></span></button>)}
+          {notifications.length === 0 && <div className="rounded-xl bg-[#f3f7f4] px-5 py-10 text-center"><Check className="mx-auto size-7 text-[#62a02b]" /><p className="mt-3 text-sm font-bold">Tudo em dia</p><p className="mt-1 text-xs text-[#74867e]">Nenhuma ação pendente agora.</p></div>}
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
 }
 function MessageDialog({ lead, body, setBody, onClose, onConfirm }: { lead: Lead | null; body: string; setBody: (value: string) => void; onClose: () => void; onConfirm: () => void }) {
   return <Dialog open={!!lead} onOpenChange={(open) => !open && onClose()}><DialogContent className="rounded-2xl sm:max-w-[540px]"><DialogHeader><DialogTitle>Mensagem para {lead?.name}</DialogTitle><DialogDescription>Revise o texto antes de abrir a conversa no WhatsApp.</DialogDescription></DialogHeader><Textarea value={body} onChange={(event) => setBody(event.target.value)} className="min-h-40 resize-y" /><div className="flex justify-end gap-2"><Button variant="ghost" onClick={onClose}>Cancelar</Button><Button onClick={onConfirm} disabled={!body.trim()} className="bg-[#22a568] hover:bg-[#198a56]"><Send className="mr-2 size-4" />Abrir WhatsApp</Button></div></DialogContent></Dialog>;

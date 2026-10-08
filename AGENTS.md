@@ -40,3 +40,4 @@ Never expose `SUPABASE_SERVICE_ROLE_KEY` or WhatsApp tokens through `NEXT_PUBLIC
 - No new dependencies and no new test framework unless necessary; state why.
 - Run `npm run lint` and `npm run build` before finishing any task.
 - Final reply: changed files (one line each) + how to test. Do not paste code in the chat.
+- Full-screen overlays and sheets must use the `use-back-closable` hook and show a visible back button on mobile.

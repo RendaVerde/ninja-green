@@ -17,6 +17,45 @@ type ContactRow = {
   created_at: string;
 };
 
+type QueryErrorDetails = { message: string; code: string | null };
+
+class AppDataQueryError extends Error {
+  constructor(
+    readonly query: string,
+    readonly code: string | null,
+    message: string,
+  ) {
+    super(message);
+    this.name = "AppDataQueryError";
+  }
+}
+
+function getQueryErrorDetails(error: unknown): QueryErrorDetails {
+  if (error && typeof error === "object") {
+    const value = error as { message?: unknown; code?: unknown };
+    return {
+      message: typeof value.message === "string" ? value.message : "Erro desconhecido do Supabase.",
+      code: typeof value.code === "string" ? value.code : null,
+    };
+  }
+  return { message: error instanceof Error ? error.message : String(error), code: null };
+}
+
+async function runQuery<T extends { error: unknown }>(query: string, operation: PromiseLike<T>) {
+  try {
+    const result = await operation;
+    if (result.error) {
+      const details = getQueryErrorDetails(result.error);
+      throw new AppDataQueryError(query, details.code, details.message);
+    }
+    return result;
+  } catch (error) {
+    if (error instanceof AppDataQueryError) throw error;
+    const details = getQueryErrorDetails(error);
+    throw new AppDataQueryError(query, details.code, details.message);
+  }
+}
+
 function formatMoment(value?: string | null) {
   if (!value) return "Não agendado";
   const date = new Date(value);
@@ -38,17 +77,15 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Sessão expirada." }, { status: 401 });
 
+  try {
   const [contactsResult, sequencesResult, linksResult, messagesResult, tagsResult, contactTagsResult] = await Promise.all([
-    supabase.from("contacts").select("id,name,phone,email,kind,interest,origin,status,note,created_at").eq("owner_id", user.id).order("created_at", { ascending: false }),
-    supabase.from("sequences").select("id,name,audience,pause_on_reply,active,created_at,updated_at").eq("owner_id", user.id).order("created_at", { ascending: true }),
-    supabase.from("contact_sequences").select("contact_id,next_run_at,paused_at,completed_at").is("completed_at", null),
-    supabase.from("messages").select("id,contact_id,direction,body,status,sent_at,created_at").eq("owner_id", user.id).order("created_at", { ascending: false }).limit(100),
-    supabase.from("tags").select("id,name,color,created_at,updated_at").eq("user_id", user.id).order("name"),
-    supabase.from("contact_tags").select("contact_id,tag_id").eq("user_id", user.id),
+    runQuery("contacts", supabase.from("contacts").select("id,name,phone,email,kind,interest,origin,status,note,created_at").eq("owner_id", user.id).order("created_at", { ascending: false })),
+    runQuery("sequences", supabase.from("sequences").select("id,name,audience,pause_on_reply,active,created_at,updated_at").eq("owner_id", user.id).order("created_at", { ascending: true })),
+    runQuery("contact_sequences", supabase.from("contact_sequences").select("contact_id,next_run_at,paused_at,completed_at").is("completed_at", null)),
+    runQuery("messages", supabase.from("messages").select("id,contact_id,direction,body,status,sent_at,created_at").eq("owner_id", user.id).order("created_at", { ascending: false }).limit(100)),
+    runQuery("tags", supabase.from("tags").select("id,name,color,created_at,updated_at").eq("user_id", user.id).order("name")),
+    runQuery("contact_tags", supabase.from("contact_tags").select("contact_id,tag_id").eq("user_id", user.id)),
   ]);
-
-  const queryError = contactsResult.error || sequencesResult.error || linksResult.error || messagesResult.error || tagsResult.error || contactTagsResult.error;
-  if (queryError) return NextResponse.json({ error: "Não foi possível carregar seus dados." }, { status: 500 });
 
   const links = linksResult.data || [];
   const messages = messagesResult.data || [];
@@ -84,8 +121,7 @@ export async function GET() {
   const sequenceRow = sequencesResult.data?.find((item) => item.active);
   let sequence = null;
   if (sequenceRow) {
-    const { data: steps, error } = await supabase.from("sequence_steps").select("id,delay_days,title,message_template,enabled,position").eq("sequence_id", sequenceRow.id).order("position");
-    if (error) return NextResponse.json({ error: "Não foi possível carregar a cadência." }, { status: 500 });
+    const { data: steps } = await runQuery("sequence_steps", supabase.from("sequence_steps").select("id,delay_days,title,message_template,enabled,position").eq("sequence_id", sequenceRow.id).order("position"));
     sequence = {
       id: sequenceRow.id,
       name: sequenceRow.name,
@@ -109,4 +145,14 @@ export async function GET() {
     })),
     tags: tagsResult.data || [],
   });
+  } catch (error) {
+    const details = getQueryErrorDetails(error);
+    console.error("[api/app-data] Supabase query failed", {
+      query: error instanceof AppDataQueryError ? error.query : "unknown",
+      message: details.message,
+      code: error instanceof AppDataQueryError ? error.code : details.code,
+      userId: user.id,
+    });
+    return NextResponse.json({ error: "Não foi possível carregar seus dados." }, { status: 500 });
+  }
 }

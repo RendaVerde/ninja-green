@@ -3,16 +3,19 @@
 import { useId, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Braces, MessageCircle } from "lucide-react";
 
+import { OverlayBackButton } from "@/components/overlay-back-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { exampleMessageContact, messageVariables, renderMessageTemplate } from "@/lib/message-variables";
+import { useBackClosable } from "@/hooks/use-back-closable";
 
 export function MessageTemplateEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   const inputId = useId();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [variablesOpen, setVariablesOpen] = useState(false);
+  const back = useBackClosable(variablesOpen, () => setVariablesOpen(false));
   const preview = useMemo(() => renderMessageTemplate(value, exampleMessageContact), [value]);
 
   function insertVariable(key: string) {
@@ -22,7 +25,7 @@ export function MessageTemplateEditor({ value, onChange }: { value: string; onCh
     const end = textarea?.selectionEnd ?? value.length;
     const nextValue = `${value.slice(0, start)}${placeholder}${value.slice(end)}`;
     onChange(nextValue);
-    setVariablesOpen(false);
+    back.close();
     window.requestAnimationFrame(() => {
       textarea?.focus();
       textarea?.setSelectionRange(start + placeholder.length, start + placeholder.length);
@@ -50,11 +53,11 @@ export function MessageTemplateEditor({ value, onChange }: { value: string; onCh
         <p className="whitespace-pre-wrap text-sm leading-6 text-[#294b3e]">{preview.text || "A mensagem aparecerá aqui."}</p>
       </div>
 
-      <Sheet open={variablesOpen} onOpenChange={setVariablesOpen}>
-        <SheetContent className="w-full overflow-y-auto sm:max-w-md">
-          <SheetHeader className="border-b">
-            <SheetTitle>Variáveis da mensagem</SheetTitle>
-            <SheetDescription>Toque em uma variável para inseri-la na posição do cursor.</SheetDescription>
+      <Sheet open={variablesOpen} onOpenChange={back.onOpenChange}>
+        <SheetContent showCloseButton={false} className="w-full overflow-y-auto sm:max-w-md">
+          <SheetHeader className="flex-row items-start border-b">
+            <OverlayBackButton onClick={back.close} />
+            <div className="min-w-0 pt-1"><SheetTitle>Variáveis da mensagem</SheetTitle><SheetDescription>Toque em uma variável para inseri-la na posição do cursor.</SheetDescription></div>
           </SheetHeader>
           <div className="space-y-2 px-4 pb-6">
             {messageVariables.map((variable) => (

@@ -3,16 +3,19 @@
 import { useMemo, useState } from "react";
 import { Search, UsersRound } from "lucide-react";
 
+import { OverlayBackButton } from "@/components/overlay-back-button";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import type { Lead } from "@/lib/demo-data";
+import { useBackClosable } from "@/hooks/use-back-closable";
 
 export function ContactMultiselect({ contacts, selectedIds, onChange }: { contacts: Lead[]; selectedIds: string[]; onChange: (ids: string[]) => void }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [draftIds, setDraftIds] = useState<string[]>(selectedIds);
+  const back = useBackClosable(open, () => setOpen(false));
 
   const visibleContacts = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -33,11 +36,11 @@ export function ContactMultiselect({ contacts, selectedIds, onChange }: { contac
   return (
     <>
       <Button type="button" variant="outline" onClick={openPicker} className="justify-start"><UsersRound className="mr-2 size-4" />Contatos escolhidos ({selectedIds.length})</Button>
-      <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent className="w-full sm:max-w-md">
-          <SheetHeader className="border-b">
-            <SheetTitle>Selecionar contatos</SheetTitle>
-            <SheetDescription>Busque e escolha contatos específicos para este fluxo.</SheetDescription>
+      <Sheet open={open} onOpenChange={back.onOpenChange}>
+        <SheetContent showCloseButton={false} className="w-full sm:max-w-md">
+          <SheetHeader className="flex-row items-start border-b">
+            <OverlayBackButton onClick={back.close} />
+            <div className="min-w-0 pt-1"><SheetTitle>Selecionar contatos</SheetTitle><SheetDescription>Busque e escolha contatos específicos para este fluxo.</SheetDescription></div>
           </SheetHeader>
           <div className="relative mx-4"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#82928b]" /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Nome, telefone ou interesse" className="pl-9" /></div>
           <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
@@ -51,7 +54,7 @@ export function ContactMultiselect({ contacts, selectedIds, onChange }: { contac
           </div>
           <SheetFooter className="border-t bg-white">
             <div className="mb-1 text-center text-xs text-[#71827a]">{draftIds.length} contato(s) selecionado(s)</div>
-            <div className="grid grid-cols-2 gap-2"><Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancelar</Button><Button type="button" onClick={() => { onChange(draftIds); setOpen(false); }} className="bg-[#0b553f] hover:bg-[#074632]">Aplicar</Button></div>
+            <div className="grid grid-cols-2 gap-2"><Button type="button" variant="outline" onClick={back.close}>Cancelar</Button><Button type="button" onClick={() => { onChange(draftIds); back.close(); }} className="bg-[#0b553f] hover:bg-[#074632]">Aplicar</Button></div>
           </SheetFooter>
         </SheetContent>
       </Sheet>
