@@ -1,12 +1,15 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { messageAttachmentsSchema } from "@/lib/message-attachment-validation";
+import { attachmentsBelongToUser } from "@/lib/message-attachments";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const idSchema = z.string().uuid();
 const updateSchema = z.object({
   title: z.string().trim().min(1).max(120),
   body: z.string().trim().min(1).max(4000),
+  attachments: messageAttachmentsSchema,
 });
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -18,13 +21,14 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const id = idSchema.safeParse(rawId);
   const parsed = updateSchema.safeParse(await request.json().catch(() => null));
   if (!id.success || !parsed.success) return NextResponse.json({ error: "Mensagem rápida inválida." }, { status: 400 });
+  if (!attachmentsBelongToUser(parsed.data.attachments, user.id)) return NextResponse.json({ error: "Um ou mais anexos são inválidos." }, { status: 400 });
 
   const { data, error } = await supabase
     .from("quick_messages")
     .update({ ...parsed.data, updated_at: new Date().toISOString() })
     .eq("id", id.data)
     .eq("user_id", user.id)
-    .select("id,title,body,created_at,updated_at")
+    .select("id,title,body,attachments,created_at,updated_at")
     .maybeSingle();
 
   if (error) return NextResponse.json({ error: "Não foi possível atualizar a mensagem rápida." }, { status: 500 });

@@ -1,4 +1,5 @@
 import type { SequenceAudience } from "@/lib/audience";
+import type { MessageAttachment } from "@/lib/message-attachments";
 
 export type LeadStatus = "Novo" | "Em contato" | "Respondeu" | "Qualificado";
 export type LeadKind = "Cliente" | "Licenciado";
@@ -34,6 +35,7 @@ export type SequenceStep = {
   delayDays: number;
   title: string;
   message: string;
+  attachments: MessageAttachment[];
   enabled: boolean;
 };
 
@@ -51,9 +53,9 @@ export type FollowUpSequence = {
 };
 
 export const defaultSequence: SequenceStep[] = [
-  { id: "welcome", delayDays: 0, title: "Boas-vindas", message: "Olá, {{nome}}! Tudo bem? Vi que você tem interesse em {{interesse}}. Posso te explicar de forma rápida como funciona?", enabled: true },
-  { id: "benefit", delayDays: 3, title: "Benefício principal", message: "Olá, {{nome}}! Separei uma informação que pode ajudar você a avaliar melhor {{interesse}}. Posso te enviar?", enabled: true },
-  { id: "proof", delayDays: 7, title: "Caso real", message: "Oi, {{nome}}! Tenho um exemplo real de alguém com um objetivo parecido com o seu. Quer conhecer o resultado?", enabled: true },
-  { id: "question", delayDays: 14, title: "Quebra de objeção", message: "Olá, {{nome}}! Ficou alguma dúvida sobre {{interesse}} que eu possa esclarecer para você?", enabled: true },
-  { id: "closing", delayDays: 25, title: "Último contato", message: "Oi, {{nome}}! Vou encerrar meus lembretes por aqui, mas continuo à disposição quando quiser conversar sobre {{interesse}}.", enabled: false },
+  { id: "welcome", delayDays: 0, title: "Boas-vindas", message: "Olá, {{nome}}! Tudo bem? Vi que você tem interesse em {{interesse}}. Posso te explicar de forma rápida como funciona?", attachments: [], enabled: true },
+  { id: "benefit", delayDays: 3, title: "Benefício principal", message: "Olá, {{nome}}! Separei uma informação que pode ajudar você a avaliar melhor {{interesse}}. Posso te enviar?", attachments: [], enabled: true },
+  { id: "proof", delayDays: 7, title: "Caso real", message: "Oi, {{nome}}! Tenho um exemplo real de alguém com um objetivo parecido com o seu. Quer conhecer o resultado?", attachments: [], enabled: true },
+  { id: "question", delayDays: 14, title: "Quebra de objeção", message: "Olá, {{nome}}! Ficou alguma dúvida sobre {{interesse}} que eu possa esclarecer para você?", attachments: [], enabled: true },
+  { id: "closing", delayDays: 25, title: "Último contato", message: "Oi, {{nome}}! Vou encerrar meus lembretes por aqui, mas continuo à disposição quando quiser conversar sobre {{interesse}}.", attachments: [], enabled: false },
 ];

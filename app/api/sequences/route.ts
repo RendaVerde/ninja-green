@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { sequenceAudiences } from "@/lib/audience";
+import { messageAttachmentsSchema } from "@/lib/message-attachment-validation";
+import { attachmentsBelongToUser } from "@/lib/message-attachments";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const sequenceSchema = z.object({
@@ -11,10 +13,11 @@ const sequenceSchema = z.object({
   pauseOnReply: z.boolean(),
   active: z.boolean().optional(),
   steps: z.array(z.object({
-    id: z.string().min(1),
+    id: z.string().uuid(),
     delayDays: z.number().int().min(0).max(365),
     title: z.string().trim().min(2).max(120),
     message: z.string().trim().min(2).max(2000),
+    attachments: messageAttachmentsSchema,
     enabled: z.boolean(),
   })).min(1).max(30),
 });
@@ -33,7 +36,7 @@ export async function GET() {
   const sequenceIds = sequences.map((sequence) => sequence.id);
 
   const [stepsResult, tagTargetsResult, contactTargetsResult] = await Promise.all([
-    supabase.from("sequence_steps").select("id,sequence_id,delay_days,title,message_template,enabled,position").in("sequence_id", sequenceIds).order("position"),
+    supabase.from("sequence_steps").select("id,sequence_id,delay_days,title,message_template,attachments,enabled,position").in("sequence_id", sequenceIds).order("position"),
     supabase.from("sequence_tag_targets").select("sequence_id,tag_id").eq("user_id", user.id).in("sequence_id", sequenceIds),
     supabase.from("sequence_contact_targets").select("sequence_id,contact_id").eq("user_id", user.id).in("sequence_id", sequenceIds),
   ]);
@@ -56,6 +59,7 @@ export async function GET() {
         delayDays: step.delay_days,
         title: step.title,
         message: step.message_template,
+        attachments: step.attachments || [],
         enabled: step.enabled,
       })),
     })),
@@ -68,6 +72,7 @@ async function saveSequence(request: Request, createOnly: boolean) {
   if (!user) return NextResponse.json({ error: "Sessão expirada." }, { status: 401 });
   const parsed = sequenceSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success || (createOnly && parsed.data.id)) return NextResponse.json({ error: "Revise a cadência antes de salvar." }, { status: 400 });
+  if (parsed.data.steps.some((step) => !attachmentsBelongToUser(step.attachments, user.id))) return NextResponse.json({ error: "Um ou mais anexos são inválidos." }, { status: 400 });
 
   let sequenceId = createOnly ? null : parsed.data.id || null;
   if (sequenceId) {
@@ -95,11 +100,13 @@ async function saveSequence(request: Request, createOnly: boolean) {
   const { error: deleteError } = await supabase.from("sequence_steps").delete().eq("sequence_id", sequenceId);
   if (deleteError) return NextResponse.json({ error: "Não foi possível atualizar as etapas." }, { status: 500 });
   const { error: insertError } = await supabase.from("sequence_steps").insert(parsed.data.steps.map((step, position) => ({
+    id: step.id,
     sequence_id: sequenceId,
     position,
     delay_days: step.delayDays,
     title: step.title,
     message_template: step.message,
+    attachments: step.attachments,
     enabled: step.enabled,
   })));
   if (insertError) return NextResponse.json({ error: "Não foi possível salvar as etapas." }, { status: 500 });

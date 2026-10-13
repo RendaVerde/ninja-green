@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { sequenceAudiences } from "@/lib/audience";
+import { signMessageAttachments } from "@/lib/message-attachment-links";
+import { appendAttachmentLinks, type MessageAttachment } from "@/lib/message-attachments";
 import { renderMessageTemplate, type MessageContact } from "@/lib/message-variables";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { buildWhatsAppUrl, normalizeWhatsAppPhone } from "@/lib/whatsapp";
@@ -49,12 +51,19 @@ export async function POST(request: Request) {
 
   const { data: quickMessage, error: messageError } = await supabase
     .from("quick_messages")
-    .select("id,title,body")
+    .select("id,title,body,attachments")
     .eq("id", parsed.data.quickMessageId)
     .eq("user_id", user.id)
     .maybeSingle();
   if (messageError) return NextResponse.json({ error: "Não foi possível carregar a mensagem rápida." }, { status: 500 });
   if (!quickMessage) return NextResponse.json({ error: "Mensagem rápida não encontrada." }, { status: 404 });
+
+  let signedAttachments;
+  try {
+    signedAttachments = await signMessageAttachments(supabase, user.id, (quickMessage.attachments || []) as MessageAttachment[]);
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Não foi possível preparar os anexos." }, { status: 500 });
+  }
 
   const { data: resolvedRows, error: audienceError } = await supabase.rpc("resolve_contact_audience", {
     target_audience: parsed.data.audience,
@@ -83,13 +92,15 @@ export async function POST(request: Request) {
 
   const recipients = selected.map((contact) => {
     const rendered = renderMessageTemplate(quickMessage.body, toMessageContact(contact));
+    const body = appendAttachmentLinks(rendered.text, signedAttachments);
     return {
       contactId: contact.id,
       contactName: contact.name,
       phone: contact.phone,
-      body: rendered.text,
-      whatsappUrl: buildWhatsAppUrl(contact.phone, rendered.text),
+      body,
+      whatsappUrl: buildWhatsAppUrl(contact.phone, body),
       unknownVariables: rendered.unknownVariables,
+      attachments: signedAttachments,
     };
   });
 

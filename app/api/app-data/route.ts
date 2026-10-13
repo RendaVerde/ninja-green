@@ -121,13 +121,13 @@ export async function GET() {
   const sequenceRow = sequencesResult.data?.find((item) => item.active);
   let sequence = null;
   if (sequenceRow) {
-    const { data: steps } = await runQuery("sequence_steps", supabase.from("sequence_steps").select("id,delay_days,title,message_template,enabled,position").eq("sequence_id", sequenceRow.id).order("position"));
+    const { data: steps } = await runQuery("sequence_steps", supabase.from("sequence_steps").select("id,delay_days,title,message_template,attachments,enabled,position").eq("sequence_id", sequenceRow.id).order("position"));
     sequence = {
       id: sequenceRow.id,
       name: sequenceRow.name,
       audience: sequenceRow.audience,
       pauseOnReply: sequenceRow.pause_on_reply,
-      steps: (steps || []).map((step) => ({ id: step.id, delayDays: step.delay_days, title: step.title, message: step.message_template, enabled: step.enabled })),
+      steps: (steps || []).map((step) => ({ id: step.id, delayDays: step.delay_days, title: step.title, message: step.message_template, attachments: step.attachments || [], enabled: step.enabled })),
     };
   }
 

@@ -80,6 +80,7 @@ create table if not exists public.sequence_steps (
   delay_days integer not null default 0 check (delay_days between 0 and 365),
   title text not null,
   message_template text not null,
+  attachments jsonb not null default '[]'::jsonb constraint sequence_steps_attachments_array_check check (jsonb_typeof(attachments) = 'array'),
   enabled boolean not null default true,
   created_at timestamptz not null default now(),
   unique(sequence_id, position)
@@ -141,6 +142,7 @@ create table if not exists public.quick_messages (
   user_id uuid not null references auth.users(id) on delete cascade,
   title text not null check (char_length(btrim(title)) between 1 and 120),
   body text not null check (char_length(btrim(body)) between 1 and 4000),
+  attachments jsonb not null default '[]'::jsonb constraint quick_messages_attachments_array_check check (jsonb_typeof(attachments) = 'array'),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -221,6 +223,23 @@ create policy "whatsapp_connections_update" on public.whatsapp_connections for u
 create policy "whatsapp_connections_delete" on public.whatsapp_connections for delete using (owner_id = auth.uid());
 create policy "whatsapp_attendants_read" on public.whatsapp_connection_attendants for select using (public.can_access_whatsapp_connection(connection_id));
 create policy "whatsapp_attendants_manage" on public.whatsapp_connection_attendants for all using (exists(select 1 from public.whatsapp_connections where id = connection_id and owner_id = auth.uid())) with check (exists(select 1 from public.whatsapp_connections where id = connection_id and owner_id = auth.uid()));
+
+insert into storage.buckets(id, name, public, file_size_limit, allowed_mime_types)
+values ('message-attachments', 'message-attachments', false, 52428800, array['image/*', 'video/*', 'application/pdf'])
+on conflict (id) do update set
+  public = excluded.public,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+create policy "message_attachments_select_own" on storage.objects for select to authenticated
+using (bucket_id = 'message-attachments' and (storage.foldername(name))[1] = auth.uid()::text);
+create policy "message_attachments_insert_own" on storage.objects for insert to authenticated
+with check (bucket_id = 'message-attachments' and (storage.foldername(name))[1] = auth.uid()::text);
+create policy "message_attachments_update_own" on storage.objects for update to authenticated
+using (bucket_id = 'message-attachments' and (storage.foldername(name))[1] = auth.uid()::text)
+with check (bucket_id = 'message-attachments' and (storage.foldername(name))[1] = auth.uid()::text);
+create policy "message_attachments_delete_own" on storage.objects for delete to authenticated
+using (bucket_id = 'message-attachments' and (storage.foldername(name))[1] = auth.uid()::text);
 
 create or replace function public.resolve_contact_audience(
   target_audience text,
@@ -423,8 +442,8 @@ begin
   values (current_user_id, duplicate_name, source_sequence.audience, source_sequence.pause_on_reply, source_sequence.active)
   returning id into new_sequence_id;
 
-  insert into public.sequence_steps(sequence_id, position, delay_days, title, message_template, enabled)
-  select new_sequence_id, position, delay_days, title, message_template, enabled
+  insert into public.sequence_steps(sequence_id, position, delay_days, title, message_template, attachments, enabled)
+  select new_sequence_id, position, delay_days, title, message_template, attachments, enabled
   from public.sequence_steps where sequence_id = target_sequence_id order by position;
 
   insert into public.sequence_tag_targets(user_id, sequence_id, tag_id)
