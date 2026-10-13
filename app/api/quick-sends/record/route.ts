@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { OutboundMessageError, recordOutboundMessage } from "@/lib/outbound-messages";
+import { OutboundMessageError, sendOutboundMessage } from "@/lib/outbound-messages";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const recordSchema = z.object({
+  messageId: z.string().uuid(),
   contactId: z.string().uuid(),
   body: z.string().trim().min(1).max(4000),
 });
@@ -18,13 +19,14 @@ export async function POST(request: Request) {
   if (!parsed.success) return NextResponse.json({ error: "Mensagem inválida." }, { status: 400 });
 
   try {
-    await recordOutboundMessage({
+    const result = await sendOutboundMessage({
       supabase,
       userId: user.id,
       contactId: parsed.data.contactId,
       body: parsed.data.body,
+      messageId: parsed.data.messageId,
     });
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, ...result });
   } catch (error) {
     if (error instanceof OutboundMessageError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
