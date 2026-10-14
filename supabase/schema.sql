@@ -130,6 +130,9 @@ create table if not exists public.messages (
   channel text not null default 'whatsapp',
   provider text,
   provider_message_id text,
+  provider_ticket_id text,
+  provider_error_code text,
+  provider_error_message text,
   direction text not null default 'outbound' check (direction in ('inbound', 'outbound')),
   body text not null,
   status text not null default 'queued',
@@ -156,6 +159,13 @@ create table if not exists public.whatsapp_connections (
   instance_name text,
   api_token text,
   active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.whatsapp_connection_secrets (
+  connection_id uuid primary key references public.whatsapp_connections(id) on delete cascade,
+  api_token text not null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -203,7 +213,10 @@ alter table public.contact_sequences enable row level security;
 alter table public.messages enable row level security;
 alter table public.quick_messages enable row level security;
 alter table public.whatsapp_connections enable row level security;
+alter table public.whatsapp_connection_secrets enable row level security;
 alter table public.whatsapp_connection_attendants enable row level security;
+
+revoke all on table public.whatsapp_connection_secrets from anon, authenticated;
 
 create policy "profiles_read_own_or_admin" on public.profiles for select using (id = auth.uid() or public.is_admin());
 create policy "profiles_update_own" on public.profiles for update using (id = auth.uid()) with check (id = auth.uid());

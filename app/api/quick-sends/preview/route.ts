@@ -94,6 +94,7 @@ export async function POST(request: Request) {
     const rendered = renderMessageTemplate(quickMessage.body, toMessageContact(contact));
     const body = appendAttachmentLinks(rendered.text, signedAttachments);
     return {
+      messageId: crypto.randomUUID(),
       contactId: contact.id,
       contactName: contact.name,
       phone: contact.phone,
@@ -104,7 +105,22 @@ export async function POST(request: Request) {
     };
   });
 
+  const { data: zproConnection, error: connectionError } = await supabase
+    .from("whatsapp_connections")
+    .select("id")
+    .eq("provider", "zpro")
+    .eq("active", true)
+    .limit(1)
+    .maybeSingle();
+  if (connectionError) {
+    return NextResponse.json(
+      { error: "Não foi possível verificar o modo de envio." },
+      { status: 500 },
+    );
+  }
+
   return NextResponse.json({
+    deliveryMode: zproConnection ? "provider" : "manual",
     message: { id: quickMessage.id, title: quickMessage.title },
     matchedCount: contacts.length,
     recipientCount: recipients.length,

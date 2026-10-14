@@ -227,6 +227,11 @@ export function NinjaGreenApp({
   const [profile, setProfile] = useState<UserProfile>(currentUser);
   const [messageLead, setMessageLead] = useState<Lead | null>(null);
   const [messageBody, setMessageBody] = useState("");
+  const [messageAttemptId, setMessageAttemptId] = useState("");
+  const [messageSending, setMessageSending] = useState(false);
+  const [messageDeliveryMode, setMessageDeliveryMode] = useState<
+    "provider" | "manual"
+  >("manual");
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<ContactListFilter>("Todos");
   const [tags, setTags] = useState<ContactTag[]>([]);
@@ -472,7 +477,29 @@ export function NinjaGreenApp({
         );
       body = appendAttachmentLinks(body, payload.attachments || []);
     }
+    const connectionsResponse = await fetch("/api/whatsapp-connections", {
+      cache: "no-store",
+    });
+    const connectionsPayload = (await connectionsResponse
+      .json()
+      .catch(() => ({}))) as {
+      error?: string;
+      connections?: Array<{ provider: string; active: boolean }>;
+    };
+    if (!connectionsResponse.ok) {
+      return toast.error(
+        connectionsPayload.error || "Não foi possível verificar o modo de envio.",
+      );
+    }
+    setMessageDeliveryMode(
+      connectionsPayload.connections?.some(
+        (connection) => connection.provider === "zpro" && connection.active,
+      )
+        ? "provider"
+        : "manual",
+    );
     setMessageBody(body);
+    setMessageAttemptId(crypto.randomUUID());
     setMessageLead(lead);
   }
 
@@ -796,27 +823,60 @@ export function NinjaGreenApp({
   }
 
   async function openWhatsApp() {
-    if (!messageLead || !messageBody.trim()) return;
-    const whatsappUrl = buildWhatsAppUrl(messageLead.phone, messageBody);
-    if (!whatsappUrl)
-      return toast.error("O contato não possui um WhatsApp válido.");
-    window.open(whatsappUrl, "_blank", "noopener,noreferrer");
+    if (!messageLead || !messageBody.trim() || !messageAttemptId) return;
     const lead = messageLead;
-    setMessageLead(null);
-    const response = await fetch("/api/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contactId: lead.id, body: messageBody.trim() }),
-    });
-    if (!response.ok)
-      toast.warning(
-        "O WhatsApp foi aberto, mas o histórico não pôde ser registrado.",
-      );
-    else
-      toast.success("WhatsApp aberto", {
-        description: "A atividade foi registrada no histórico.",
+    const manualUrl =
+      messageDeliveryMode === "manual"
+        ? buildWhatsAppUrl(lead.phone, messageBody)
+        : null;
+    if (messageDeliveryMode === "manual" && !manualUrl) {
+      return toast.error("O contato não possui um WhatsApp válido.");
+    }
+    if (manualUrl) {
+      window.open(manualUrl, "_blank", "noopener,noreferrer");
+    }
+    setMessageSending(true);
+    try {
+      const response = await fetch("/api/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messageId: messageAttemptId,
+          contactId: lead.id,
+          body: messageBody.trim(),
+        }),
       });
-    await loadData();
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        mode?: "provider" | "manual";
+        whatsappUrl?: string | null;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error || "Não foi possível enviar a mensagem.");
+      }
+      if (payload.mode === "manual" && payload.whatsappUrl) {
+        if (!manualUrl) {
+          window.open(payload.whatsappUrl, "_blank", "noopener,noreferrer");
+        }
+        toast.success("WhatsApp aberto", {
+          description: "A atividade foi registrada no histórico.",
+        });
+      } else {
+        toast.success("Mensagem enviada pela ZPRO", {
+          description: "O resultado foi registrado no histórico.",
+        });
+      }
+      setMessageLead(null);
+      setMessageAttemptId("");
+      await loadData();
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Não foi possível enviar a mensagem.",
+      );
+      await loadData();
+    } finally {
+      setMessageSending(false);
+    }
   }
 
   async function signOut() {
@@ -1088,7 +1148,11 @@ export function NinjaGreenApp({
         lead={messageLead}
         body={messageBody}
         setBody={setMessageBody}
-        onClose={() => setMessageLead(null)}
+        sending={messageSending}
+        onClose={() => {
+          setMessageLead(null);
+          setMessageAttemptId("");
+        }}
         onConfirm={openWhatsApp}
       />
       <ProfileDialog
@@ -2424,12 +2488,14 @@ function MessageDialog({
   lead,
   body,
   setBody,
+  sending,
   onClose,
   onConfirm,
 }: {
   lead: Lead | null;
   body: string;
   setBody: (value: string) => void;
+  sending: boolean;
   onClose: () => void;
   onConfirm: () => void;
 }) {
@@ -2439,7 +2505,7 @@ function MessageDialog({
         <DialogHeader>
           <DialogTitle>Mensagem para {lead?.name}</DialogTitle>
           <DialogDescription>
-            Revise o texto antes de abrir a conversa no WhatsApp.
+            Revise o texto antes de enviar. Sem conexão ativa, o WhatsApp será aberto para envio manual.
           </DialogDescription>
         </DialogHeader>
         <Textarea
@@ -2453,11 +2519,11 @@ function MessageDialog({
           </Button>
           <Button
             onClick={onConfirm}
-            disabled={!body.trim()}
+            disabled={!body.trim() || sending}
             className="bg-[#22a568] hover:bg-[#198a56]"
           >
-            <Send className="mr-2 size-4" />
-            Abrir WhatsApp
+            {sending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Send className="mr-2 size-4" />}
+            Enviar WhatsApp
           </Button>
         </div>
       </DialogContent>

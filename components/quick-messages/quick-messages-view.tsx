@@ -45,6 +45,7 @@ type QuickMessage = {
 };
 
 type PreviewRecipient = {
+  messageId: string;
   contactId: string;
   contactName: string;
   phone: string;
@@ -55,6 +56,7 @@ type PreviewRecipient = {
 
 type PreviewPayload = {
   error?: string;
+  deliveryMode?: "provider" | "manual";
   message?: { id: string; title: string };
   matchedCount?: number;
   recipientCount?: number;
@@ -344,18 +346,26 @@ export function QuickMessagesView({
 
   async function registerCurrent() {
     if (!currentRecipient) return false;
+    const openedManually =
+      preview?.deliveryMode === "manual" && currentRecipient.whatsappUrl;
+    if (openedManually) {
+      window.open(currentRecipient.whatsappUrl, "_blank", "noopener,noreferrer");
+    }
     setQueueBusy(true);
     try {
       const response = await fetch("/api/quick-sends/record", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          messageId: currentRecipient.messageId,
           contactId: currentRecipient.contactId,
           body: currentRecipient.body,
         }),
       });
       const payload = (await response.json().catch(() => ({}))) as {
         error?: string;
+        mode?: "provider" | "manual";
+        whatsappUrl?: string | null;
       };
       if (!response.ok)
         throw new Error(payload.error || "Não foi possível registrar o envio.");
@@ -363,6 +373,22 @@ export function QuickMessagesView({
         ids.includes(currentRecipient.contactId)
           ? ids
           : [...ids, currentRecipient.contactId],
+      );
+      setOpenedIds((ids) =>
+        ids.includes(currentRecipient.contactId)
+          ? ids
+          : [...ids, currentRecipient.contactId],
+      );
+      if (payload.mode === "manual" && payload.whatsappUrl && !openedManually) {
+        window.open(payload.whatsappUrl, "_blank", "noopener,noreferrer");
+      }
+      if (queueIndex < recipients.length - 1) {
+        setCooldown(Number(intervalSeconds));
+      }
+      toast.success(
+        payload.mode === "manual"
+          ? "WhatsApp aberto e atividade registrada."
+          : "Mensagem enviada pela ZPRO.",
       );
       return true;
     } catch (error) {
@@ -378,17 +404,8 @@ export function QuickMessagesView({
   }
 
   async function openCurrentWhatsApp() {
-    if (!currentRecipient?.whatsappUrl) return;
-    window.open(currentRecipient.whatsappUrl, "_blank", "noopener,noreferrer");
-    setOpenedIds((ids) =>
-      ids.includes(currentRecipient.contactId)
-        ? ids
-        : [...ids, currentRecipient.contactId],
-    );
-    if (queueIndex < recipients.length - 1)
-      setCooldown(Number(intervalSeconds));
-    const recorded = await registerCurrent();
-    if (recorded) toast.success("WhatsApp aberto e atividade registrada.");
+    if (!currentRecipient) return;
+    await registerCurrent();
   }
 
   function nextRecipient() {
@@ -634,9 +651,9 @@ export function QuickMessagesView({
                 </label>
               </div>
               <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-800">
-                <strong className="block">Envio manual protegido</strong>O
-                navegador abrirá uma conversa por vez. O botão Próximo será
-                liberado após o intervalo escolhido.
+                <strong className="block">Fila protegida</strong>O envio será
+                feito pela conexão ZPRO ativa ou abrirá uma conversa por vez
+                no modo manual. O botão Próximo respeitará o intervalo escolhido.
               </div>
               <Button
                 onClick={() => void reviewSend()}
@@ -655,6 +672,11 @@ export function QuickMessagesView({
 
           {sendPhase === "review" && preview && (
             <div className="space-y-5 px-4 pb-6">
+              <div className="rounded-xl bg-[#edf5f0] px-4 py-3 text-xs font-semibold text-[#31594a]">
+                {preview.deliveryMode === "provider"
+                  ? "Envio direto pela conexão ZPRO ativa"
+                  : "Envio manual: uma conversa do WhatsApp será aberta por vez"}
+              </div>
               <div className="grid grid-cols-3 gap-2">
                 <Summary
                   value={String(preview.matchedCount || 0)}
@@ -772,8 +794,8 @@ export function QuickMessagesView({
                   disabled={queueBusy}
                   className="h-12 w-full bg-[#22a568] hover:bg-[#198a56]"
                 >
-                  <MessageCircle className="mr-2 size-5" />
-                  Abrir WhatsApp
+                  {queueBusy ? <Loader2 className="mr-2 size-5 animate-spin" /> : <MessageCircle className="mr-2 size-5" />}
+                  Enviar WhatsApp
                 </Button>
               ) : !currentRecorded ? (
                 <Button

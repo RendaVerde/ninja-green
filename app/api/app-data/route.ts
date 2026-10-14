@@ -82,7 +82,7 @@ export async function GET() {
     runQuery("contacts", supabase.from("contacts").select("id,name,phone,email,kind,interest,origin,status,note,created_at").eq("owner_id", user.id).order("created_at", { ascending: false })),
     runQuery("sequences", supabase.from("sequences").select("id,name,audience,pause_on_reply,active,created_at,updated_at").eq("owner_id", user.id).order("created_at", { ascending: true })),
     runQuery("contact_sequences", supabase.from("contact_sequences").select("contact_id,next_run_at,paused_at,completed_at").is("completed_at", null)),
-    runQuery("messages", supabase.from("messages").select("id,contact_id,direction,body,status,sent_at,created_at").eq("owner_id", user.id).order("created_at", { ascending: false }).limit(100)),
+    runQuery("messages", supabase.from("messages").select("id,contact_id,direction,body,status,provider,provider_error_message,sent_at,created_at").eq("owner_id", user.id).order("created_at", { ascending: false }).limit(100)),
     runQuery("tags", supabase.from("tags").select("id,name,color,created_at,updated_at").eq("user_id", user.id).order("name")),
     runQuery("contact_tags", supabase.from("contact_tags").select("contact_id,tag_id").eq("user_id", user.id)),
   ]);
@@ -111,8 +111,8 @@ export async function GET() {
       createdAt: contact.created_at,
       history: contactMessages.slice(0, 10).map((message) => ({
         id: message.id,
-        title: message.direction === "inbound" ? "Resposta recebida" : message.status === "opened" ? "WhatsApp aberto" : "Mensagem registrada",
-        detail: message.body,
+        title: message.direction === "inbound" ? "Resposta recebida" : message.status === "failed" ? "Falha no envio" : message.status === "sent" ? `Enviada via ${message.provider === "zpro" ? "ZPRO" : "WhatsApp"}` : message.status === "opened" ? "WhatsApp aberto" : "Mensagem registrada",
+        detail: message.status === "failed" && message.provider_error_message ? `${message.body}\n\nErro: ${message.provider_error_message}` : message.body,
         time: formatRelative(message.sent_at || message.created_at),
       })),
     };
