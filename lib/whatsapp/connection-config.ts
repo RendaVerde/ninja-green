@@ -2,36 +2,17 @@ import "server-only";
 
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import type { WhatsAppProviderCredentials } from "@/lib/whatsapp/provider";
+import {
+  maskZproApiId,
+  parseZproConnectionAddress,
+} from "@/lib/whatsapp/zpro-connection";
 
 export function normalizeZproBaseUrl(value: string) {
-  const url = new URL(value.trim());
-  if (url.protocol !== "https:") {
-    throw new Error("A BaseUrl da ZPRO deve usar HTTPS.");
-  }
-  if (url.username || url.password) {
-    throw new Error("A BaseUrl não pode conter usuário ou senha.");
-  }
-
-  const hostname = url.hostname.toLowerCase();
-  const privateIpv4 =
-    /^(10\.|127\.|169\.254\.|192\.168\.|0\.)/.test(hostname) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(hostname);
-  if (
-    hostname === "localhost" ||
-    hostname === "::1" ||
-    hostname.endsWith(".local") ||
-    privateIpv4
-  ) {
-    throw new Error("A BaseUrl deve apontar para um endereço público.");
-  }
-
-  return url.toString().replace(/\/+$/, "");
+  return parseZproConnectionAddress(value).baseUrl;
 }
 
 export function maskApiId(apiId: string | null) {
-  if (!apiId) return "";
-  if (apiId.length <= 4) return "••••";
-  return `••••${apiId.slice(-4)}`;
+  return maskZproApiId(apiId || "");
 }
 
 export async function saveConnectionToken(connectionId: string, token: string) {

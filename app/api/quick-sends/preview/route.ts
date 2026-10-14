@@ -58,6 +58,20 @@ export async function POST(request: Request) {
   if (messageError) return NextResponse.json({ error: "Não foi possível carregar a mensagem rápida." }, { status: 500 });
   if (!quickMessage) return NextResponse.json({ error: "Mensagem rápida não encontrada." }, { status: 404 });
 
+  const { data: zproConnection, error: connectionError } = await supabase
+    .from("whatsapp_connections")
+    .select("id")
+    .eq("provider", "zpro")
+    .eq("active", true)
+    .limit(1)
+    .maybeSingle();
+  if (connectionError) {
+    return NextResponse.json(
+      { error: "Não foi possível verificar o modo de envio." },
+      { status: 500 },
+    );
+  }
+
   let signedAttachments;
   try {
     signedAttachments = await signMessageAttachments(supabase, user.id, (quickMessage.attachments || []) as MessageAttachment[]);
@@ -92,32 +106,21 @@ export async function POST(request: Request) {
 
   const recipients = selected.map((contact) => {
     const rendered = renderMessageTemplate(quickMessage.body, toMessageContact(contact));
-    const body = appendAttachmentLinks(rendered.text, signedAttachments);
+    const manualBody = appendAttachmentLinks(rendered.text, signedAttachments);
     return {
       messageId: crypto.randomUUID(),
       contactId: contact.id,
       contactName: contact.name,
       phone: contact.phone,
-      body,
-      whatsappUrl: buildWhatsAppUrl(contact.phone, body),
+      body: rendered.text,
+      whatsappUrl: buildWhatsAppUrl(
+        contact.phone,
+        zproConnection ? rendered.text : manualBody,
+      ),
       unknownVariables: rendered.unknownVariables,
-      attachments: signedAttachments,
+      attachments: (quickMessage.attachments || []) as MessageAttachment[],
     };
   });
-
-  const { data: zproConnection, error: connectionError } = await supabase
-    .from("whatsapp_connections")
-    .select("id")
-    .eq("provider", "zpro")
-    .eq("active", true)
-    .limit(1)
-    .maybeSingle();
-  if (connectionError) {
-    return NextResponse.json(
-      { error: "Não foi possível verificar o modo de envio." },
-      { status: 500 },
-    );
-  }
 
   return NextResponse.json({
     deliveryMode: zproConnection ? "provider" : "manual",

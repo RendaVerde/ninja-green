@@ -98,6 +98,7 @@ import {
 import { renderMessageTemplate } from "@/lib/message-variables";
 import {
   appendAttachmentLinks,
+  type MessageAttachment,
   type SignedMessageAttachment,
 } from "@/lib/message-attachments";
 import { buildWhatsAppUrl } from "@/lib/whatsapp";
@@ -227,6 +228,12 @@ export function NinjaGreenApp({
   const [profile, setProfile] = useState<UserProfile>(currentUser);
   const [messageLead, setMessageLead] = useState<Lead | null>(null);
   const [messageBody, setMessageBody] = useState("");
+  const [messageAttachments, setMessageAttachments] = useState<
+    MessageAttachment[]
+  >([]);
+  const [messageManualAttachments, setMessageManualAttachments] = useState<
+    SignedMessageAttachment[]
+  >([]);
   const [messageAttemptId, setMessageAttemptId] = useState("");
   const [messageSending, setMessageSending] = useState(false);
   const [messageDeliveryMode, setMessageDeliveryMode] = useState<
@@ -456,27 +463,18 @@ export function NinjaGreenApp({
   }, [currentTime, dataLoading, leads]);
 
   async function sendMessage(lead: Lead) {
-    const activeStep = sequence.find((step) => step.enabled);
+    const assignedSequence = lead.sequenceId
+      ? sequences.find((item) => item.id === lead.sequenceId)
+      : null;
+    const enabledSteps = (assignedSequence?.steps || sequence).filter(
+      (step) => step.enabled,
+    );
+    const activeStep = enabledSteps[lead.currentStep ?? 0];
     const template =
       activeStep?.message ||
       "Olá, {{nome}}! Tudo bem? Gostaria de conversar sobre {{interesse}}.";
-    let body = renderMessageTemplate(template, lead).text;
-    if (activeStep?.attachments?.length) {
-      const response = await fetch("/api/attachments/links", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ attachments: activeStep.attachments }),
-      });
-      const payload = (await response.json().catch(() => ({}))) as {
-        error?: string;
-        attachments?: SignedMessageAttachment[];
-      };
-      if (!response.ok)
-        return toast.error(
-          payload.error || "Não foi possível preparar os anexos.",
-        );
-      body = appendAttachmentLinks(body, payload.attachments || []);
-    }
+    const body = renderMessageTemplate(template, lead).text;
+    const attachments = activeStep?.attachments || [];
     const connectionsResponse = await fetch("/api/whatsapp-connections", {
       cache: "no-store",
     });
@@ -488,17 +486,36 @@ export function NinjaGreenApp({
     };
     if (!connectionsResponse.ok) {
       return toast.error(
-        connectionsPayload.error || "Não foi possível verificar o modo de envio.",
+        connectionsPayload.error ||
+          "Não foi possível verificar o modo de envio.",
       );
     }
-    setMessageDeliveryMode(
-      connectionsPayload.connections?.some(
-        (connection) => connection.provider === "zpro" && connection.active,
-      )
-        ? "provider"
-        : "manual",
-    );
+    const deliveryMode = connectionsPayload.connections?.some(
+      (connection) => connection.provider === "zpro" && connection.active,
+    )
+      ? "provider"
+      : "manual";
+    let signedManualAttachments: SignedMessageAttachment[] = [];
+    if (deliveryMode === "manual" && attachments.length) {
+      const response = await fetch("/api/attachments/links", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ attachments }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        attachments?: SignedMessageAttachment[];
+      };
+      if (!response.ok)
+        return toast.error(
+          payload.error || "Não foi possível preparar os anexos.",
+        );
+      signedManualAttachments = payload.attachments || [];
+    }
+    setMessageDeliveryMode(deliveryMode);
     setMessageBody(body);
+    setMessageAttachments(attachments);
+    setMessageManualAttachments(signedManualAttachments);
     setMessageAttemptId(crypto.randomUUID());
     setMessageLead(lead);
   }
@@ -827,7 +844,10 @@ export function NinjaGreenApp({
     const lead = messageLead;
     const manualUrl =
       messageDeliveryMode === "manual"
-        ? buildWhatsAppUrl(lead.phone, messageBody)
+        ? buildWhatsAppUrl(
+            lead.phone,
+            appendAttachmentLinks(messageBody, messageManualAttachments),
+          )
         : null;
     if (messageDeliveryMode === "manual" && !manualUrl) {
       return toast.error("O contato não possui um WhatsApp válido.");
@@ -844,6 +864,8 @@ export function NinjaGreenApp({
           messageId: messageAttemptId,
           contactId: lead.id,
           body: messageBody.trim(),
+          manual: messageDeliveryMode === "manual",
+          attachments: messageAttachments,
         }),
       });
       const payload = (await response.json().catch(() => ({}))) as {
@@ -868,10 +890,14 @@ export function NinjaGreenApp({
       }
       setMessageLead(null);
       setMessageAttemptId("");
+      setMessageAttachments([]);
+      setMessageManualAttachments([]);
       await loadData();
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : "Não foi possível enviar a mensagem.",
+        error instanceof Error
+          ? error.message
+          : "Não foi possível enviar a mensagem.",
       );
       await loadData();
     } finally {
@@ -1148,10 +1174,13 @@ export function NinjaGreenApp({
         lead={messageLead}
         body={messageBody}
         setBody={setMessageBody}
+        attachments={messageAttachments}
         sending={messageSending}
         onClose={() => {
           setMessageLead(null);
           setMessageAttemptId("");
+          setMessageAttachments([]);
+          setMessageManualAttachments([]);
         }}
         onConfirm={openWhatsApp}
       />
@@ -2488,6 +2517,7 @@ function MessageDialog({
   lead,
   body,
   setBody,
+  attachments,
   sending,
   onClose,
   onConfirm,
@@ -2495,6 +2525,7 @@ function MessageDialog({
   lead: Lead | null;
   body: string;
   setBody: (value: string) => void;
+  attachments: MessageAttachment[];
   sending: boolean;
   onClose: () => void;
   onConfirm: () => void;
@@ -2505,7 +2536,8 @@ function MessageDialog({
         <DialogHeader>
           <DialogTitle>Mensagem para {lead?.name}</DialogTitle>
           <DialogDescription>
-            Revise o texto antes de enviar. Sem conexão ativa, o WhatsApp será aberto para envio manual.
+            Revise o texto antes de enviar. Sem conexão ativa, o WhatsApp será
+            aberto para envio manual.
           </DialogDescription>
         </DialogHeader>
         <Textarea
@@ -2513,6 +2545,16 @@ function MessageDialog({
           onChange={(event) => setBody(event.target.value)}
           className="min-h-40 resize-y"
         />
+        {attachments.length > 0 && (
+          <div className="rounded-xl bg-[#f3f7f4] px-4 py-3 text-xs text-[#4f675d]">
+            <strong className="block text-[#23483b]">
+              {attachments.length} anexo(s) serão enviados pela ZPRO
+            </strong>
+            <span className="mt-1 block truncate">
+              {attachments.map((attachment) => attachment.name).join(", ")}
+            </span>
+          </div>
+        )}
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>
             Cancelar
@@ -2522,7 +2564,11 @@ function MessageDialog({
             disabled={!body.trim() || sending}
             className="bg-[#22a568] hover:bg-[#198a56]"
           >
-            {sending ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Send className="mr-2 size-4" />}
+            {sending ? (
+              <Loader2 className="mr-2 size-4 animate-spin" />
+            ) : (
+              <Send className="mr-2 size-4" />
+            )}
             Enviar WhatsApp
           </Button>
         </div>

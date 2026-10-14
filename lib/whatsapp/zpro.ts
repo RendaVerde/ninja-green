@@ -1,6 +1,7 @@
 import "server-only";
 
 import type {
+  SendMediaInput,
   SendTextInput,
   WhatsAppConnectionTestResult,
   WhatsAppProvider,
@@ -44,13 +45,14 @@ export class ZproWhatsAppProvider implements WhatsAppProvider {
   private async request(suffix: string, body?: Record<string, unknown>) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
+    const token = this.credentials.token.replace(/^Bearer\s+/i, "").trim();
 
     try {
       const response = await fetch(this.endpoint(suffix), {
         method: "POST",
         headers: {
           Accept: "application/json",
-          Authorization: `Bearer ${this.credentials.token}`,
+          Authorization: `Bearer ${token}`,
           ...(body ? { "Content-Type": "application/json" } : {}),
         },
         body: body ? JSON.stringify(body) : undefined,
@@ -100,12 +102,24 @@ export class ZproWhatsAppProvider implements WhatsAppProvider {
     };
   }
 
-  async sendMedia(): Promise<WhatsAppSendResult> {
-    throw new WhatsAppProviderError(
-      "O envio de mídia pela ZPRO ainda não está habilitado.",
-      "ZPRO_MEDIA_NOT_IMPLEMENTED",
-      501,
-    );
+  async sendMedia(input: SendMediaInput): Promise<WhatsAppSendResult> {
+    const payload = await this.request("/url", {
+      body: input.body,
+      number: input.number,
+      externalKey: input.externalKey,
+      isClosed: input.isClosed ?? false,
+      validateNumber: input.validateNumber ?? true,
+      mediaUrl: input.mediaUrl,
+    });
+    return {
+      mode: "provider",
+      provider: "zpro",
+      providerMessageId: payload.messageId || payload.idFront,
+      ticketId:
+        payload.ticketId === undefined ? undefined : String(payload.ticketId),
+      rawStatus:
+        typeof payload.status === "string" ? payload.status : undefined,
+    };
   }
 
   async testConnection(): Promise<WhatsAppConnectionTestResult> {

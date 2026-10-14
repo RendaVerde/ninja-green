@@ -24,6 +24,8 @@ export type Lead = {
   lastContact: string;
   note?: string;
   tagIds?: string[];
+  sequenceId?: string | null;
+  currentStep?: number | null;
   nextRunAt?: string | null;
   lastContactAt?: string | null;
   createdAt?: string;

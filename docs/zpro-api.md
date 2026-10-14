@@ -4,10 +4,11 @@ Fonte: coleção pública **Z-PRO v4.x.x.x** no Postman, consultada em 13/10/202
 
 ## Base e autenticação
 
-- Base informada pelo cliente: `https://{BaseUrl}`.
+- Cada cliente informa o backend público da própria instalação: `https://{BaseUrl}`. A URL do painel/frontend não é usada pelo Ninja Green.
 - Identificador da API: `{ApiID}` na URL.
 - Header em todas as rotas abaixo: `Authorization: Bearer {token}`.
-- Credenciais devem permanecer no servidor. Nunca expor token em resposta, log ou variável `NEXT_PUBLIC_*`.
+- Backend, ApiID e token são configurações privadas de cada tenant. Nunca usar uma instalação real como padrão ou exemplo, nem expor esses valores em logs ou variáveis `NEXT_PUBLIC_*`.
+- A tela aceita tanto a base isolada quanto o endpoint completo `/v2/api/external/{ApiID}`; quando completo, o app separa e armazena base e ApiID.
 
 ## Enviar texto
 
@@ -21,13 +22,15 @@ Fonte: coleção pública **Z-PRO v4.x.x.x** no Postman, consultada em 13/10/202
 
 A resposta de sucesso inclui o `ticketId` efetivo e `idFront`, usados para correlação. Erros seguem o formato `{ "success": false, "error": "ERR_*" }`.
 
-## Enviar arquivo/mídia — próxima etapa
+## Enviar arquivo/mídia
 
 As rotas usam o mesmo Bearer token e os mesmos campos `body`, `number`, `externalKey`, `isClosed` e `validateNumber`:
 
 - Multipart: `POST /v2/api/external/{ApiID}` com `multipart/form-data`; campo `media` do tipo arquivo. A coleção descreve imagens, documentos etc., sem publicar uma allow-list de MIME ou limite específico do multipart.
 - Por URL: `POST /v2/api/external/{ApiID}/url` com JSON e `mediaUrl` apontando para o arquivo, além dos campos comuns.
 - A coleção também documenta envio em JSON/base64 e informa teto de **50 MB para o body JSON**. Não implementar até validar o payload completo.
+
+O Ninja Green usa a rota por URL com links temporários assinados do Supabase Storage. Cada arquivo recebe uma `externalKey` determinística no formato `{messageId}-media-{posição}`; não usamos base64 nem multipart nesta implementação.
 
 ## Testar conexão/status
 

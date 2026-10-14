@@ -2,12 +2,15 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { OutboundMessageError, sendOutboundMessage } from "@/lib/outbound-messages";
+import { messageAttachmentsSchema } from "@/lib/message-attachment-validation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const recordSchema = z.object({
   messageId: z.string().uuid(),
   contactId: z.string().uuid(),
   body: z.string().trim().min(1).max(4000),
+  manual: z.boolean().default(false),
+  attachments: messageAttachmentsSchema,
 });
 
 export async function POST(request: Request) {
@@ -25,6 +28,8 @@ export async function POST(request: Request) {
       contactId: parsed.data.contactId,
       body: parsed.data.body,
       messageId: parsed.data.messageId,
+      forceManual: parsed.data.manual,
+      attachments: parsed.data.attachments,
     });
     return NextResponse.json({ ok: true, ...result });
   } catch (error) {

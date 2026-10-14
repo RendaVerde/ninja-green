@@ -27,3 +27,9 @@ export function appendAttachmentLinks(body: string, attachments: SignedMessageAt
   const links = attachments.map((attachment) => `📎 ${attachment.name}: ${attachment.url}`);
   return `${body.trim()}\n\n${links.join("\n")}`;
 }
+
+export function appendAttachmentSummary(body: string, attachments: MessageAttachment[]) {
+  if (!attachments.length) return body.trim();
+  const files = attachments.map((attachment) => `📎 ${attachment.name}`);
+  return `${body.trim()}\n\n${files.join("\n")}`;
+}

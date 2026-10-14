@@ -52,6 +52,7 @@ type PreviewRecipient = {
   body: string;
   whatsappUrl: string;
   unknownVariables: string[];
+  attachments: MessageAttachment[];
 };
 
 type PreviewPayload = {
@@ -360,6 +361,8 @@ export function QuickMessagesView({
           messageId: currentRecipient.messageId,
           contactId: currentRecipient.contactId,
           body: currentRecipient.body,
+          manual: Boolean(openedManually),
+          attachments: currentRecipient.attachments,
         }),
       });
       const payload = (await response.json().catch(() => ({}))) as {
@@ -710,6 +713,11 @@ export function QuickMessagesView({
                   <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-[#294b3e]">
                     {recipients[0].body}
                   </p>
+                  {recipients[0].attachments.length > 0 && (
+                    <p className="mt-3 text-xs font-semibold text-[#557064]">
+                      {recipients[0].attachments.length} anexo(s): {recipients[0].attachments.map((attachment) => attachment.name).join(", ")}
+                    </p>
+                  )}
                 </section>
               )}
               {Boolean(preview.excluded?.length) && (
@@ -781,6 +789,11 @@ export function QuickMessagesView({
                 <p className="mt-4 whitespace-pre-wrap rounded-xl bg-[#f3f7f4] p-4 text-sm leading-6 text-[#294b3e]">
                   {currentRecipient.body}
                 </p>
+                {currentRecipient.attachments.length > 0 && (
+                  <p className="mt-3 text-xs font-semibold text-[#557064]">
+                    {currentRecipient.attachments.length} anexo(s) pela ZPRO
+                  </p>
+                )}
               </section>
               {cooldown > 0 && (
                 <div className="flex items-center justify-center gap-2 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">

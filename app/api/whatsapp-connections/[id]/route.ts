@@ -4,9 +4,9 @@ import { z } from "zod";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import {
   getConnectionTokens,
-  normalizeZproBaseUrl,
   saveConnectionToken,
 } from "@/lib/whatsapp/connection-config";
+import { parseZproConnectionAddress } from "@/lib/whatsapp/zpro-connection";
 
 const updateSchema = z.object({
   name: z.string().trim().min(2).max(100),
@@ -67,28 +67,39 @@ export async function PATCH(
     );
   }
   const hasToken = tokenIds.has(id) || Boolean(parsed.data.apiToken);
-  const apiId =
-    parsed.data.instanceName ||
-    (current.provider === "zpro" ? current.instance_name : "") ||
-    "";
+  let apiId = parsed.data.instanceName || "";
   let endpointUrl = parsed.data.endpointUrl || null;
 
   if (parsed.data.provider === "zpro") {
-    if (!endpointUrl || !apiId || !hasToken) {
+    endpointUrl =
+      endpointUrl ||
+      (current.provider === "zpro" ? current.endpoint_url : null);
+    if (!endpointUrl || !hasToken) {
       return NextResponse.json(
-        { error: "Informe BaseUrl, ApiID e token da ZPRO." },
+        { error: "Informe a URL do backend, o ApiID e o token da ZPRO." },
         { status: 400 },
       );
     }
     try {
-      endpointUrl = normalizeZproBaseUrl(endpointUrl);
+      const address = parseZproConnectionAddress(endpointUrl, apiId);
+      endpointUrl = address.baseUrl;
+      apiId =
+        address.apiId ||
+        (current.provider === "zpro" ? current.instance_name : "") ||
+        "";
+      if (!apiId) {
+        return NextResponse.json(
+          { error: "Informe o ApiID da ZPRO ou cole o endpoint completo." },
+          { status: 400 },
+        );
+      }
     } catch (baseUrlError) {
       return NextResponse.json(
         {
           error:
             baseUrlError instanceof Error
               ? baseUrlError.message
-              : "BaseUrl da ZPRO inválida.",
+              : "URL do backend da ZPRO inválida.",
         },
         { status: 400 },
       );
