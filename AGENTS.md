@@ -41,3 +41,10 @@ Never expose `SUPABASE_SERVICE_ROLE_KEY` or WhatsApp tokens through `NEXT_PUBLIC
 - Run `npm run lint` and `npm run build` before finishing any task.
 - Final reply: changed files (one line each) + how to test. Do not paste code in the chat.
 - Full-screen overlays and sheets must use the `use-back-closable` hook and show a visible back button on mobile.
+
+## Git and Supabase access
+
+- After each completed milestone: run lint and build, then commit with Conventional Commits (small, focused commits; never include .env, tokens or secrets) and push to the current feature branch. Never push to `main` unless I ask.
+- If the code depends on a new migration: apply it first, verify it, and only then push. If you cannot apply it, commit locally and tell me which file to run.
+- Supabase access: you may inspect schema, policies and storage. You may apply only the new migration files created in the current task (additive, idempotent). Never delete data, drop tables or change auth settings or secrets without asking.
+- WhatsApp sending notes live in `docs/zpro-api.md`; read it before touching message sending.

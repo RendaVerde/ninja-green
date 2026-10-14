@@ -6,6 +6,7 @@ import {
   sendOutboundMessage,
   type SendOutboundMessageResult,
 } from "@/lib/outbound-messages";
+import { messageAttachmentsSchema } from "@/lib/message-attachment-validation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const messageSchema = z.object({
@@ -13,6 +14,7 @@ const messageSchema = z.object({
   contactId: z.string().uuid(),
   body: z.string().trim().min(1).max(4000),
   manual: z.boolean().default(false),
+  attachments: messageAttachmentsSchema,
 });
 
 export async function POST(request: Request) {
@@ -30,6 +32,7 @@ export async function POST(request: Request) {
       body: parsed.data.body,
       messageId: parsed.data.messageId,
       forceManual: parsed.data.manual,
+      attachments: parsed.data.attachments,
     });
   } catch (error) {
     if (error instanceof OutboundMessageError) {

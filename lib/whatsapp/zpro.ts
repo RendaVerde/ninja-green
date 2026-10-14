@@ -1,6 +1,7 @@
 import "server-only";
 
 import type {
+  SendMediaInput,
   SendTextInput,
   WhatsAppConnectionTestResult,
   WhatsAppProvider,
@@ -101,12 +102,24 @@ export class ZproWhatsAppProvider implements WhatsAppProvider {
     };
   }
 
-  async sendMedia(): Promise<WhatsAppSendResult> {
-    throw new WhatsAppProviderError(
-      "O envio de mídia pela ZPRO ainda não está habilitado.",
-      "ZPRO_MEDIA_NOT_IMPLEMENTED",
-      501,
-    );
+  async sendMedia(input: SendMediaInput): Promise<WhatsAppSendResult> {
+    const payload = await this.request("/url", {
+      body: input.body,
+      number: input.number,
+      externalKey: input.externalKey,
+      isClosed: input.isClosed ?? false,
+      validateNumber: input.validateNumber ?? true,
+      mediaUrl: input.mediaUrl,
+    });
+    return {
+      mode: "provider",
+      provider: "zpro",
+      providerMessageId: payload.messageId || payload.idFront,
+      ticketId:
+        payload.ticketId === undefined ? undefined : String(payload.ticketId),
+      rawStatus:
+        typeof payload.status === "string" ? payload.status : undefined,
+    };
   }
 
   async testConnection(): Promise<WhatsAppConnectionTestResult> {

@@ -2,9 +2,18 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { signMessageAttachments } from "@/lib/message-attachment-links";
+import {
+  appendAttachmentLinks,
+  appendAttachmentSummary,
+  type MessageAttachment,
+} from "@/lib/message-attachments";
 import { normalizeWhatsAppPhone } from "@/lib/whatsapp";
 import { ManualWhatsAppProvider } from "@/lib/whatsapp/manual";
-import type { WhatsAppProvider } from "@/lib/whatsapp/provider";
+import type {
+  WhatsAppProvider,
+  WhatsAppSendResult,
+} from "@/lib/whatsapp/provider";
 import { WhatsAppProviderError } from "@/lib/whatsapp/provider";
 import { resolveWhatsAppProvider } from "@/lib/whatsapp/resolve-provider";
 
@@ -26,6 +35,7 @@ type SendOutboundMessageInput = {
   body: string;
   messageId: string;
   forceManual?: boolean;
+  attachments?: MessageAttachment[];
 };
 
 export type SendOutboundMessageResult = {
@@ -165,7 +175,14 @@ async function markFailure(
 export async function sendOutboundMessage(
   input: SendOutboundMessageInput,
 ): Promise<SendOutboundMessageResult> {
-  const { supabase, userId, contactId, body, messageId } = input;
+  const {
+    supabase,
+    userId,
+    contactId,
+    body,
+    messageId,
+    attachments = [],
+  } = input;
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
     .select("id,phone")
@@ -186,14 +203,22 @@ export async function sendOutboundMessage(
     );
   }
 
-  const reservation = await reserveMessage(input, contact.id);
+  const reservation = await reserveMessage(
+    { ...input, body: appendAttachmentSummary(body, attachments) },
+    contact.id,
+  );
   if (reservation.completed) {
     const isManual = reservation.completed.status === "opened";
     let whatsappUrl: string | null = null;
     if (isManual) {
       const manualProvider = new ManualWhatsAppProvider();
+      const signedAttachments = await signMessageAttachments(
+        supabase,
+        userId,
+        attachments,
+      );
       const manualResult = await manualProvider.sendText({
-        body,
+        body: appendAttachmentLinks(body, signedAttachments),
         number,
         externalKey: messageId,
       });
@@ -221,13 +246,51 @@ export async function sendOutboundMessage(
   }
 
   try {
-    const result = await provider.sendText({
-      body,
-      number,
-      externalKey: messageId,
-      isClosed: false,
-      validateNumber: true,
-    });
+    const signedAttachments = await signMessageAttachments(
+      supabase,
+      userId,
+      attachments,
+    );
+    let result: WhatsAppSendResult | undefined;
+    if (provider.name === "manual") {
+      result = await provider.sendText({
+        body: appendAttachmentLinks(body, signedAttachments),
+        number,
+        externalKey: messageId,
+        isClosed: false,
+        validateNumber: true,
+      });
+    } else if (signedAttachments.length > 0) {
+      for (const [index, attachment] of signedAttachments.entries()) {
+        const mediaResult = await provider.sendMedia({
+          body: index === 0 ? body : "",
+          number,
+          externalKey:
+            index === 0 ? messageId : `${messageId}-media-${index + 1}`,
+          isClosed: false,
+          validateNumber: true,
+          mediaUrl: attachment.url,
+          mimeType: attachment.mimeType,
+          fileName: attachment.name,
+        });
+        result ??= mediaResult;
+      }
+    } else {
+      result = await provider.sendText({
+        body,
+        number,
+        externalKey: messageId,
+        isClosed: false,
+        validateNumber: true,
+      });
+    }
+    if (!result) {
+      throw new OutboundMessageError(
+        "Nenhuma mensagem foi processada.",
+        500,
+        "EMPTY_DELIVERY_RESULT",
+      );
+    }
     const sentAt = new Date().toISOString();
     const status = result.mode === "manual" ? "opened" : "sent";
     const { error: updateError } = await supabase
