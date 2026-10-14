@@ -25,11 +25,12 @@ type SendOutboundMessageInput = {
   contactId: string;
   body: string;
   messageId: string;
+  forceManual?: boolean;
 };
 
 export type SendOutboundMessageResult = {
   messageId: string;
-  contactCreatedAt: string;
+  sentAt: string;
   mode: "provider" | "manual";
   provider: string;
   status: "sent" | "opened";
@@ -44,6 +45,7 @@ type MessageRow = {
   body: string;
   provider: string | null;
   status: string;
+  sent_at: string | null;
 };
 
 async function loadExistingMessage(
@@ -53,7 +55,7 @@ async function loadExistingMessage(
 ) {
   const { data, error } = await supabase
     .from("messages")
-    .select("id,contact_id,body,provider,status")
+    .select("id,contact_id,body,provider,status,sent_at")
     .eq("id", messageId)
     .eq("owner_id", userId)
     .maybeSingle();
@@ -166,7 +168,7 @@ export async function sendOutboundMessage(
   const { supabase, userId, contactId, body, messageId } = input;
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("id,phone,created_at")
+    .select("id,phone")
     .eq("id", contactId)
     .eq("owner_id", userId)
     .maybeSingle();
@@ -199,7 +201,7 @@ export async function sendOutboundMessage(
     }
     return {
       messageId,
-      contactCreatedAt: contact.created_at,
+      sentAt: reservation.completed.sent_at || new Date().toISOString(),
       mode: isManual ? "manual" : "provider",
       provider: reservation.completed.provider || "manual",
       status: reservation.completed.status as "sent" | "opened",
@@ -211,7 +213,9 @@ export async function sendOutboundMessage(
 
   let provider: WhatsAppProvider;
   try {
-    provider = await resolveWhatsAppProvider(supabase);
+    provider = input.forceManual
+      ? new ManualWhatsAppProvider()
+      : await resolveWhatsAppProvider(supabase);
   } catch (error) {
     return await markFailure(supabase, userId, messageId, "zpro", error);
   }
@@ -256,7 +260,7 @@ export async function sendOutboundMessage(
 
     return {
       messageId,
-      contactCreatedAt: contact.created_at,
+      sentAt,
       mode: result.mode,
       provider: result.provider,
       status,

@@ -44,13 +44,14 @@ export class ZproWhatsAppProvider implements WhatsAppProvider {
   private async request(suffix: string, body?: Record<string, unknown>) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
+    const token = this.credentials.token.replace(/^Bearer\s+/i, "").trim();
 
     try {
       const response = await fetch(this.endpoint(suffix), {
         method: "POST",
         headers: {
           Accept: "application/json",
-          Authorization: `Bearer ${this.credentials.token}`,
+          Authorization: `Bearer ${token}`,
           ...(body ? { "Content-Type": "application/json" } : {}),
         },
         body: body ? JSON.stringify(body) : undefined,

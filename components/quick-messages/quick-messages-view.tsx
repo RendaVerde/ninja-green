@@ -360,6 +360,7 @@ export function QuickMessagesView({
           messageId: currentRecipient.messageId,
           contactId: currentRecipient.contactId,
           body: currentRecipient.body,
+          manual: Boolean(openedManually),
         }),
       });
       const payload = (await response.json().catch(() => ({}))) as {

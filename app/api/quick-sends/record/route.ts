@@ -8,6 +8,7 @@ const recordSchema = z.object({
   messageId: z.string().uuid(),
   contactId: z.string().uuid(),
   body: z.string().trim().min(1).max(4000),
+  manual: z.boolean().default(false),
 });
 
 export async function POST(request: Request) {
@@ -25,6 +26,7 @@ export async function POST(request: Request) {
       contactId: parsed.data.contactId,
       body: parsed.data.body,
       messageId: parsed.data.messageId,
+      forceManual: parsed.data.manual,
     });
     return NextResponse.json({ ok: true, ...result });
   } catch (error) {

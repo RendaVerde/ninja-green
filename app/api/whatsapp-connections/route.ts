@@ -6,9 +6,9 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import {
   getConnectionTokens,
   maskApiId,
-  normalizeZproBaseUrl,
   saveConnectionToken,
 } from "@/lib/whatsapp/connection-config";
+import { parseZproConnectionAddress } from "@/lib/whatsapp/zpro-connection";
 
 const providerSchema = z.enum([
   "uazapi",
@@ -39,13 +39,6 @@ const connectionSchema = z
         code: "custom",
         path: ["endpointUrl"],
         message: "Informe a BaseUrl da ZPRO.",
-      });
-    }
-    if (!value.instanceName) {
-      context.addIssue({
-        code: "custom",
-        path: ["instanceName"],
-        message: "Informe o ApiID da ZPRO.",
       });
     }
     if (!value.apiToken) {
@@ -124,10 +117,14 @@ export async function GET() {
       id: item.id,
       name: item.name,
       provider: item.provider,
-      endpointUrl: item.endpoint_url || "",
+      endpointUrl:
+        item.provider === "zpro" ? "" : item.endpoint_url || "",
+      endpointConfigured: Boolean(item.endpoint_url),
       instanceName: item.provider === "zpro" ? "" : item.instance_name || "",
       apiIdMasked:
-        item.provider === "zpro" ? maskApiId(item.instance_name) : "",
+        item.provider === "zpro" && item.owner_id === user.id
+          ? maskApiId(item.instance_name)
+          : "",
       active: item.active,
       owner: item.owner_id === user.id,
       hasToken: tokenConnectionIds.has(item.id),
@@ -164,16 +161,28 @@ export async function POST(request: Request) {
   }
 
   let endpointUrl = parsed.data.endpointUrl || null;
+  let instanceName = parsed.data.instanceName || null;
   if (parsed.data.provider === "zpro") {
     try {
-      endpointUrl = normalizeZproBaseUrl(parsed.data.endpointUrl);
+      const address = parseZproConnectionAddress(
+        parsed.data.endpointUrl,
+        parsed.data.instanceName,
+      );
+      if (!address.apiId) {
+        return NextResponse.json(
+          { error: "Informe o ApiID da ZPRO ou cole o endpoint completo." },
+          { status: 400 },
+        );
+      }
+      endpointUrl = address.baseUrl;
+      instanceName = address.apiId;
     } catch (baseUrlError) {
       return NextResponse.json(
         {
           error:
             baseUrlError instanceof Error
               ? baseUrlError.message
-              : "BaseUrl da ZPRO inválida.",
+              : "URL do backend da ZPRO inválida.",
         },
         { status: 400 },
       );
@@ -187,7 +196,7 @@ export async function POST(request: Request) {
       name: parsed.data.name,
       provider: parsed.data.provider,
       endpoint_url: endpointUrl,
-      instance_name: parsed.data.instanceName || null,
+      instance_name: instanceName,
       api_token: null,
       active: parsed.data.active,
     })

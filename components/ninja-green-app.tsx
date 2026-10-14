@@ -456,7 +456,13 @@ export function NinjaGreenApp({
   }, [currentTime, dataLoading, leads]);
 
   async function sendMessage(lead: Lead) {
-    const activeStep = sequence.find((step) => step.enabled);
+    const assignedSequence = lead.sequenceId
+      ? sequences.find((item) => item.id === lead.sequenceId)
+      : null;
+    const enabledSteps = (assignedSequence?.steps || sequence).filter(
+      (step) => step.enabled,
+    );
+    const activeStep = enabledSteps[lead.currentStep ?? 0];
     const template =
       activeStep?.message ||
       "Olá, {{nome}}! Tudo bem? Gostaria de conversar sobre {{interesse}}.";
@@ -844,6 +850,7 @@ export function NinjaGreenApp({
           messageId: messageAttemptId,
           contactId: lead.id,
           body: messageBody.trim(),
+          manual: messageDeliveryMode === "manual",
         }),
       });
       const payload = (await response.json().catch(() => ({}))) as {

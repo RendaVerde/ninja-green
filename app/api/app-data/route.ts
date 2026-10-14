@@ -81,7 +81,7 @@ export async function GET() {
   const [contactsResult, sequencesResult, linksResult, messagesResult, tagsResult, contactTagsResult] = await Promise.all([
     runQuery("contacts", supabase.from("contacts").select("id,name,phone,email,kind,interest,origin,status,note,created_at").eq("owner_id", user.id).order("created_at", { ascending: false })),
     runQuery("sequences", supabase.from("sequences").select("id,name,audience,pause_on_reply,active,created_at,updated_at").eq("owner_id", user.id).order("created_at", { ascending: true })),
-    runQuery("contact_sequences", supabase.from("contact_sequences").select("contact_id,next_run_at,paused_at,completed_at").is("completed_at", null)),
+    runQuery("contact_sequences", supabase.from("contact_sequences").select("contact_id,sequence_id,current_step,next_run_at,paused_at,completed_at").is("completed_at", null)),
     runQuery("messages", supabase.from("messages").select("id,contact_id,direction,body,status,provider,provider_error_message,sent_at,created_at").eq("owner_id", user.id).order("created_at", { ascending: false }).limit(100)),
     runQuery("tags", supabase.from("tags").select("id,name,color,created_at,updated_at").eq("user_id", user.id).order("name")),
     runQuery("contact_tags", supabase.from("contact_tags").select("contact_id,tag_id").eq("user_id", user.id)),
@@ -104,6 +104,8 @@ export async function GET() {
       status: contact.status,
       note: contact.note || "",
       tagIds: (contactTagsResult.data || []).filter((link) => link.contact_id === contact.id).map((link) => link.tag_id),
+      sequenceId: link?.sequence_id || null,
+      currentStep: link?.current_step ?? null,
       nextRunAt: link?.next_run_at || null,
       lastContactAt: latestMessage?.sent_at || latestMessage?.created_at || null,
       nextContact: formatMoment(link?.next_run_at),

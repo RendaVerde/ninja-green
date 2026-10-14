@@ -4,10 +4,11 @@ Fonte: coleção pública **Z-PRO v4.x.x.x** no Postman, consultada em 13/10/202
 
 ## Base e autenticação
 
-- Base informada pelo cliente: `https://{BaseUrl}`.
+- Cada cliente informa o backend público da própria instalação: `https://{BaseUrl}`. A URL do painel/frontend não é usada pelo Ninja Green.
 - Identificador da API: `{ApiID}` na URL.
 - Header em todas as rotas abaixo: `Authorization: Bearer {token}`.
-- Credenciais devem permanecer no servidor. Nunca expor token em resposta, log ou variável `NEXT_PUBLIC_*`.
+- Backend, ApiID e token são configurações privadas de cada tenant. Nunca usar uma instalação real como padrão ou exemplo, nem expor esses valores em logs ou variáveis `NEXT_PUBLIC_*`.
+- A tela aceita tanto a base isolada quanto o endpoint completo `/v2/api/external/{ApiID}`; quando completo, o app separa e armazena base e ApiID.
 
 ## Enviar texto
 

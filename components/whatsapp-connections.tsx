@@ -9,10 +9,11 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { maskZproApiId, parseZproConnectionAddress } from "@/lib/whatsapp/zpro-connection";
 
 type Provider = "uazapi" | "baileys" | "evolution" | "evolution_go" | "zpro";
 type Attendant = { id: string; profileName: string; email: string; role: "attendant" | "manager"; linked: boolean };
-type Connection = { id: string; name: string; provider: Provider; endpointUrl: string; instanceName: string; apiIdMasked: string; active: boolean; owner: boolean; hasToken: boolean; attendants: Attendant[] };
+type Connection = { id: string; name: string; provider: Provider; endpointUrl: string; endpointConfigured: boolean; instanceName: string; apiIdMasked: string; active: boolean; owner: boolean; hasToken: boolean; attendants: Attendant[] };
 const providerLabels: Record<Provider, string> = { uazapi: "UazApi", baileys: "Baileys", evolution: "Evolution", evolution_go: "Evolution GO", zpro: "ZPRO" };
 
 export function WhatsAppConnections() {
@@ -25,6 +26,8 @@ export function WhatsAppConnections() {
   const [active, setActive] = useState(true);
   const [attendantConnection, setAttendantConnection] = useState<Connection | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
+  const [endpointUrl, setEndpointUrl] = useState("");
+  const [apiId, setApiId] = useState("");
 
   const loadConnections = useCallback(async () => {
     setLoading(true);
@@ -39,8 +42,30 @@ export function WhatsAppConnections() {
 
   useEffect(() => { const timer = window.setTimeout(() => void loadConnections(), 0); return () => window.clearTimeout(timer); }, [loadConnections]);
 
-  function openCreate() { setEditing(null); setProvider("uazapi"); setActive(true); setDialogOpen(true); }
-  function openEdit(connection: Connection) { setEditing(connection); setProvider(connection.provider); setActive(connection.active); setDialogOpen(true); }
+  function openCreate() { setEditing(null); setProvider("uazapi"); setActive(true); setEndpointUrl(""); setApiId(""); setDialogOpen(true); }
+  function openEdit(connection: Connection) { setEditing(connection); setProvider(connection.provider); setActive(connection.active); setEndpointUrl(connection.provider === "zpro" ? "" : connection.endpointUrl); setApiId(""); setDialogOpen(true); }
+
+  function updateEndpointUrl(value: string) {
+    setEndpointUrl(value);
+    if (provider !== "zpro" || !value) return;
+    try {
+      const address = parseZproConnectionAddress(value);
+      if (address.extractedApiId) setApiId(address.apiId);
+    } catch {
+      // A API exibe a validação definitiva ao salvar.
+    }
+  }
+
+  let endpointPreview = "";
+  if (provider === "zpro" && endpointUrl) {
+    try {
+      const address = parseZproConnectionAddress(endpointUrl, apiId);
+      const maskedApiId = address.apiId ? maskZproApiId(address.apiId) : editing?.apiIdMasked;
+      if (maskedApiId) endpointPreview = `${address.baseUrl}/v2/api/external/${maskedApiId}`;
+    } catch {
+      endpointPreview = "";
+    }
+  }
 
   async function saveConnection(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSaving(true);
@@ -132,7 +157,8 @@ export function WhatsAppConnections() {
                 {connection.active ? <CheckCircle2 className="mr-1 size-3" /> : <CircleOff className="mr-1 size-3" />}{connection.active ? "Ativa" : "Pausada"}
               </Badge>
             </div>
-            {connection.endpointUrl && <p className="mt-4 truncate rounded-lg bg-[#f4f7f5] px-3 py-2 text-xs text-[#5f746a]">{connection.endpointUrl}</p>}
+            {connection.provider === "zpro" && connection.endpointConfigured && <p className="mt-4 rounded-lg bg-[#f4f7f5] px-3 py-2 text-xs text-[#5f746a]">Backend configurado (oculto)</p>}
+            {connection.provider !== "zpro" && connection.endpointUrl && <p className="mt-4 truncate rounded-lg bg-[#f4f7f5] px-3 py-2 text-xs text-[#5f746a]">{connection.endpointUrl}</p>}
             <div className="mt-5 border-t border-[#e9eeeb] pt-4">
               <div className="flex items-center justify-between">
                 <div>
@@ -180,20 +206,25 @@ export function WhatsAppConnections() {
                 {Object.entries(providerLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
               </select>
             </Field>
-            <Field label={provider === "zpro" ? "ApiID da ZPRO" : "Instância / sessão"}>
+            <Field label={provider === "zpro" ? "ApiID da sua ZPRO" : "Instância / sessão"}>
               <Input
                 name="instanceName"
                 required={provider === "zpro" && !editing}
-                defaultValue={provider === "zpro" ? "" : editing?.instanceName}
-                placeholder={provider === "zpro" ? (editing?.apiIdMasked ? `Deixe vazio para manter ${editing.apiIdMasked}` : "ApiID fornecido pela ZPRO") : "Nome ou ID da instância"}
+                value={provider === "zpro" ? apiId : undefined}
+                onChange={provider === "zpro" ? (event) => setApiId(event.target.value) : undefined}
+                defaultValue={provider === "zpro" ? undefined : editing?.instanceName}
+                placeholder={provider === "zpro" ? (editing?.apiIdMasked ? `Deixe vazio para manter ${editing.apiIdMasked}` : "UUID após /v2/api/external/") : "Nome ou ID da instância"}
               />
+              {provider === "zpro" && <span className="font-normal text-[#71827a]">Você pode deixar este campo vazio ao colar o endpoint completo abaixo.</span>}
             </Field>
             <Field label={provider === "zpro" ? "Token Bearer da ZPRO" : "Token / chave de API"}>
               <Input name="apiToken" type="password" required={provider === "zpro" && !editing} placeholder={editing?.hasToken ? "Deixe vazio para manter a chave" : "Token do provedor"} />
             </Field>
             <div className="sm:col-span-2">
-              <Field label={provider === "zpro" ? "BaseUrl da ZPRO *" : "URL base da API (opcional)"}>
-                <Input name="endpointUrl" type="url" required={provider === "zpro"} defaultValue={editing?.endpointUrl} placeholder={provider === "zpro" ? "https://sua-instancia-zpro.com" : "https://api.seu-provedor.com"} />
+              <Field label={provider === "zpro" ? "URL do backend da sua ZPRO *" : "URL base da API (opcional)"}>
+                <Input name="endpointUrl" type="url" required={provider === "zpro" && !editing} value={endpointUrl} onChange={(event) => updateEndpointUrl(event.target.value)} placeholder={provider === "zpro" ? (editing?.endpointConfigured ? "Deixe vazio para manter o backend atual" : "https://backend-da-sua-zpro.com") : "https://api.seu-provedor.com"} />
+                {provider === "zpro" && <span className="font-normal text-[#71827a]">Use o backend da sua instalação, não a URL do painel. Também aceitamos o endpoint completo e extraímos o ApiID automaticamente.</span>}
+                {provider === "zpro" && endpointPreview && <span className="break-all rounded-md bg-[#edf4ef] px-2 py-1.5 font-mono font-normal text-[#416052]">Endpoint: {endpointPreview}</span>}
               </Field>
             </div>
             <label className="flex items-center justify-between rounded-xl bg-[#f3f7f4] p-4 text-sm font-semibold sm:col-span-2">Conexão ativa<Switch checked={active} onCheckedChange={setActive} /></label>
