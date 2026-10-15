@@ -52,3 +52,6 @@ next-env.d.ts
 /.codex/
 /outputs/
 /work/
+
+# Secrets Codex
+/.codex-secrets/
