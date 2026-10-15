@@ -62,7 +62,7 @@ export class ZproWhatsAppProvider implements WhatsAppProvider {
         signal: controller.signal,
       });
       const responseBody = await response.text();
-      if (suffix === "/showChannel") {
+      if (suffix === "/showChannelById") {
         if (response.status === 401 || response.status === 403) {
           throw new WhatsAppProviderError(
             "Credencial ZPRO inválida.",
@@ -79,7 +79,7 @@ export class ZproWhatsAppProvider implements WhatsAppProvider {
         }
         if (response.status === 404 || !responseBody) {
           throw new WhatsAppProviderError(
-            "Número não encontrado nesse canal ZPRO.",
+            "Canal ZPRO não encontrado para o ID informado.",
             "ZPRO_CHANNEL_NOT_FOUND",
             404,
           );
@@ -159,25 +159,27 @@ export class ZproWhatsAppProvider implements WhatsAppProvider {
     };
   }
 
-  async testConnection(channelNumber?: string): Promise<WhatsAppConnectionTestResult> {
-    if (!channelNumber) {
+  async testConnection(channelId?: number): Promise<WhatsAppConnectionTestResult> {
+    if (!channelId || !Number.isSafeInteger(channelId) || channelId <= 0) {
       throw new WhatsAppProviderError(
-        "Informe o número do WhatsApp da conexão antes de testar.",
-        "ZPRO_CHANNEL_NUMBER_REQUIRED",
+        "Informe um ID de canal válido antes de testar.",
+        "ZPRO_CHANNEL_ID_REQUIRED",
         400,
       );
     }
-    const payload = await this.request("/showChannel", {
-      number: channelNumber,
+    const payload = await this.request("/showChannelById", {
+      id: channelId,
     });
     const status =
       typeof payload.status === "string"
         ? payload.status
+        : typeof payload.data?.status === "string"
+          ? payload.data.status
         : typeof payload.state === "string"
           ? payload.state
           : undefined;
     const rawChannelId = payload.id ?? payload.data?.id;
-    const channelId =
+    const returnedChannelId =
       typeof rawChannelId === "number"
         ? rawChannelId
         : typeof rawChannelId === "string" && /^\d+$/.test(rawChannelId)
@@ -190,8 +192,8 @@ export class ZproWhatsAppProvider implements WhatsAppProvider {
         : "Conexão ZPRO validada com sucesso.",
       channelStatus: status,
       channelId:
-        channelId !== undefined && Number.isSafeInteger(channelId)
-          ? channelId
+        returnedChannelId !== undefined && Number.isSafeInteger(returnedChannelId)
+          ? returnedChannelId
           : undefined,
     };
   }

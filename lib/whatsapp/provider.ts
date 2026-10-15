@@ -45,7 +45,7 @@ export interface WhatsAppProvider {
   readonly name: WhatsAppProviderName | "manual";
   sendText(input: SendTextInput): Promise<WhatsAppSendResult>;
   sendMedia(input: SendMediaInput): Promise<WhatsAppSendResult>;
-  testConnection(channelNumber?: string): Promise<WhatsAppConnectionTestResult>;
+  testConnection(channelId?: number): Promise<WhatsAppConnectionTestResult>;
 }
 
 export class WhatsAppProviderError extends Error {

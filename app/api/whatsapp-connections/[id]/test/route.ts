@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getConnectionCredentials } from "@/lib/whatsapp/connection-config";
 import { createWhatsAppProvider } from "@/lib/whatsapp/factory";
@@ -21,7 +20,7 @@ export async function POST(
   const { id } = await context.params;
   const { data: connection, error } = await supabase
     .from("whatsapp_connections")
-    .select("id,owner_id,provider,endpoint_url,instance_name,channel_number,active")
+    .select("id,provider,endpoint_url,instance_name,channel_id,active")
     .eq("id", id)
     .maybeSingle();
   if (error || !connection) {
@@ -42,9 +41,9 @@ export async function POST(
       { status: 400 },
     );
   }
-  if (!connection.channel_number) {
+  if (!connection.channel_id) {
     return NextResponse.json(
-      { error: "Informe o número do WhatsApp da conexão antes de testar." },
+      { error: "Informe o ID do canal antes de testar a conexão." },
       { status: 400 },
     );
   }
@@ -56,21 +55,7 @@ export async function POST(
       connection.instance_name,
     );
     const provider = createWhatsAppProvider("zpro", credentials);
-    const result = await provider.testConnection(connection.channel_number);
-    if (result.channelId !== undefined) {
-      const admin = createSupabaseAdminClient();
-      const { error: channelIdError } = await admin
-        .from("whatsapp_connections")
-        .update({
-          channel_id: result.channelId,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", connection.id)
-        .eq("owner_id", user.id);
-      if (channelIdError) {
-        throw new Error("Não foi possível guardar o ID do canal ZPRO.");
-      }
-    }
+    const result = await provider.testConnection(connection.channel_id);
     return NextResponse.json(result);
   } catch (testError) {
     if (testError instanceof WhatsAppProviderError) {

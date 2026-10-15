@@ -7,7 +7,6 @@ import {
   saveConnectionToken,
 } from "@/lib/whatsapp/connection-config";
 import { parseZproConnectionAddress } from "@/lib/whatsapp/zpro-connection";
-import { normalizeWhatsAppPhone } from "@/lib/whatsapp";
 
 const updateSchema = z.object({
   name: z.string().trim().min(2).max(100),
@@ -21,7 +20,7 @@ const updateSchema = z.object({
   endpointUrl: z.string().trim().url().or(z.literal("")),
   instanceName: z.string().trim().max(120),
   apiToken: z.string().trim().max(2000).optional(),
-  channelNumber: z.string().trim().max(30).default(""),
+  channelId: z.string().trim().max(20).default(""),
   active: z.boolean(),
 });
 
@@ -48,7 +47,7 @@ export async function PATCH(
   const { id } = await context.params;
   const { data: current, error: currentError } = await supabase
     .from("whatsapp_connections")
-    .select("id,provider,endpoint_url,instance_name,channel_number,channel_id")
+    .select("id,provider,endpoint_url,instance_name")
     .eq("id", id)
     .eq("owner_id", user.id)
     .maybeSingle();
@@ -71,16 +70,19 @@ export async function PATCH(
   const hasToken = tokenIds.has(id) || Boolean(parsed.data.apiToken);
   let apiId = parsed.data.instanceName || "";
   let endpointUrl = parsed.data.endpointUrl || null;
-  let channelNumber: string | null = null;
+  let channelId: number | null = null;
 
   if (parsed.data.provider === "zpro") {
-    channelNumber = normalizeWhatsAppPhone(parsed.data.channelNumber);
-    if (!channelNumber) {
+    if (
+      !/^[1-9]\d*$/.test(parsed.data.channelId) ||
+      !Number.isSafeInteger(Number(parsed.data.channelId))
+    ) {
       return NextResponse.json(
-        { error: "Informe o número do WhatsApp da conexão com DDI 55." },
+        { error: "Informe um ID de canal inteiro e positivo." },
         { status: 400 },
       );
     }
+    channelId = Number(parsed.data.channelId);
     endpointUrl =
       endpointUrl ||
       (current.provider === "zpro" ? current.endpoint_url : null);
@@ -125,13 +127,8 @@ export async function PATCH(
       instance_name:
         parsed.data.provider === "zpro" ? apiId : parsed.data.instanceName || null,
       api_token: null,
-      channel_number: channelNumber,
-      channel_id:
-        parsed.data.provider === "zpro" &&
-        current.provider === "zpro" &&
-        current.channel_number === channelNumber
-          ? current.channel_id
-          : null,
+      channel_number: null,
+      channel_id: channelId,
       active: parsed.data.active,
       updated_at: new Date().toISOString(),
     })
