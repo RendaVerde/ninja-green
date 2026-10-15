@@ -38,13 +38,14 @@ export type WhatsAppConnectionTestResult = {
   ok: boolean;
   message: string;
   channelStatus?: string;
+  channelId?: number;
 };
 
 export interface WhatsAppProvider {
   readonly name: WhatsAppProviderName | "manual";
   sendText(input: SendTextInput): Promise<WhatsAppSendResult>;
   sendMedia(input: SendMediaInput): Promise<WhatsAppSendResult>;
-  testConnection(): Promise<WhatsAppConnectionTestResult>;
+  testConnection(channelNumber?: string): Promise<WhatsAppConnectionTestResult>;
 }
 
 export class WhatsAppProviderError extends Error {

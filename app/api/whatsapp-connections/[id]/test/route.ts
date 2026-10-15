@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getConnectionCredentials } from "@/lib/whatsapp/connection-config";
 import { createWhatsAppProvider } from "@/lib/whatsapp/factory";
@@ -20,7 +21,7 @@ export async function POST(
   const { id } = await context.params;
   const { data: connection, error } = await supabase
     .from("whatsapp_connections")
-    .select("id,provider,endpoint_url,instance_name,active")
+    .select("id,owner_id,provider,endpoint_url,instance_name,channel_number,active")
     .eq("id", id)
     .maybeSingle();
   if (error || !connection) {
@@ -41,6 +42,12 @@ export async function POST(
       { status: 400 },
     );
   }
+  if (!connection.channel_number) {
+    return NextResponse.json(
+      { error: "Informe o número do WhatsApp da conexão antes de testar." },
+      { status: 400 },
+    );
+  }
 
   try {
     const credentials = await getConnectionCredentials(
@@ -49,12 +56,32 @@ export async function POST(
       connection.instance_name,
     );
     const provider = createWhatsAppProvider("zpro", credentials);
-    return NextResponse.json(await provider.testConnection());
+    const result = await provider.testConnection(connection.channel_number);
+    if (result.channelId !== undefined) {
+      const admin = createSupabaseAdminClient();
+      const { error: channelIdError } = await admin
+        .from("whatsapp_connections")
+        .update({
+          channel_id: result.channelId,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", connection.id)
+        .eq("owner_id", user.id);
+      if (channelIdError) {
+        throw new Error("Não foi possível guardar o ID do canal ZPRO.");
+      }
+    }
+    return NextResponse.json(result);
   } catch (testError) {
     if (testError instanceof WhatsAppProviderError) {
       return NextResponse.json(
         { error: testError.message, code: testError.code },
-        { status: testError.status >= 500 ? testError.status : 502 },
+        {
+          status:
+            testError.status >= 400 && testError.status <= 599
+              ? testError.status
+              : 502,
+        },
       );
     }
     return NextResponse.json(

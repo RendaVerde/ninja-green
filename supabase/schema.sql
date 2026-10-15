@@ -158,6 +158,8 @@ create table if not exists public.whatsapp_connections (
   endpoint_url text,
   instance_name text,
   api_token text,
+  channel_number text constraint whatsapp_connections_channel_number_check check (channel_number is null or channel_number ~ '^55[0-9]{10,11}$'),
+  channel_id bigint constraint whatsapp_connections_channel_id_check check (channel_id is null or channel_id > 0),
   active boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()

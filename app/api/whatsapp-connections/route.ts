@@ -9,6 +9,7 @@ import {
   saveConnectionToken,
 } from "@/lib/whatsapp/connection-config";
 import { parseZproConnectionAddress } from "@/lib/whatsapp/zpro-connection";
+import { normalizeWhatsAppPhone } from "@/lib/whatsapp";
 
 const providerSchema = z.enum([
   "uazapi",
@@ -29,6 +30,7 @@ const connectionSchema = z
     endpointUrl: z.string().trim().url().or(z.literal("")).default(""),
     instanceName: z.string().trim().max(120).default(""),
     apiToken: z.string().trim().max(2000).default(""),
+    channelNumber: z.string().trim().max(30).default(""),
     active: z.boolean().default(true),
     attendants: z.array(attendantSchema).max(30).default([]),
   })
@@ -46,6 +48,13 @@ const connectionSchema = z
         code: "custom",
         path: ["apiToken"],
         message: "Informe o token da ZPRO.",
+      });
+    }
+    if (!normalizeWhatsAppPhone(value.channelNumber)) {
+      context.addIssue({
+        code: "custom",
+        path: ["channelNumber"],
+        message: "Informe o número do WhatsApp da conexão com DDI 55.",
       });
     }
   });
@@ -77,7 +86,7 @@ export async function GET() {
   const { data: connections, error } = await supabase
     .from("whatsapp_connections")
     .select(
-      "id,owner_id,name,provider,endpoint_url,instance_name,active,created_at",
+      "id,owner_id,name,provider,endpoint_url,instance_name,channel_number,channel_id,active,created_at",
     )
     .order("created_at", { ascending: false });
   if (error) {
@@ -125,6 +134,14 @@ export async function GET() {
         item.provider === "zpro" && item.owner_id === user.id
           ? maskApiId(item.instance_name)
           : "",
+      channelNumber:
+        item.provider === "zpro" && item.owner_id === user.id
+          ? item.channel_number || ""
+          : "",
+      channelId:
+        item.provider === "zpro" && item.owner_id === user.id
+          ? item.channel_id
+          : null,
       active: item.active,
       owner: item.owner_id === user.id,
       hasToken: tokenConnectionIds.has(item.id),
@@ -199,6 +216,11 @@ export async function POST(request: Request) {
       endpoint_url: endpointUrl,
       instance_name: instanceName,
       api_token: null,
+      channel_number:
+        parsed.data.provider === "zpro"
+          ? normalizeWhatsAppPhone(parsed.data.channelNumber)
+          : null,
+      channel_id: null,
       active: parsed.data.active,
     })
     .select("id")

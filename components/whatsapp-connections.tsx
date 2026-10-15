@@ -13,7 +13,7 @@ import { maskZproApiId, parseZproConnectionAddress } from "@/lib/whatsapp/zpro-c
 
 type Provider = "uazapi" | "baileys" | "evolution" | "evolution_go" | "zpro";
 type Attendant = { id: string; profileName: string; email: string; role: "attendant" | "manager"; linked: boolean };
-type Connection = { id: string; name: string; provider: Provider; endpointUrl: string; endpointConfigured: boolean; instanceName: string; apiIdMasked: string; active: boolean; owner: boolean; hasToken: boolean; attendants: Attendant[] };
+type Connection = { id: string; name: string; provider: Provider; endpointUrl: string; endpointConfigured: boolean; instanceName: string; apiIdMasked: string; channelNumber: string; channelId: number | null; active: boolean; owner: boolean; hasToken: boolean; attendants: Attendant[] };
 const providerLabels: Record<Provider, string> = { uazapi: "UazApi", baileys: "Baileys", evolution: "Evolution", evolution_go: "Evolution GO", zpro: "ZPRO" };
 
 export function WhatsAppConnections() {
@@ -71,7 +71,7 @@ export function WhatsAppConnections() {
     event.preventDefault(); setSaving(true);
     const data = new FormData(event.currentTarget);
     try {
-      const response = await fetch(editing ? `/api/whatsapp-connections/${editing.id}` : "/api/whatsapp-connections", { method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: data.get("name"), provider, endpointUrl: data.get("endpointUrl"), instanceName: data.get("instanceName"), apiToken: data.get("apiToken"), active, attendants: [] }) });
+      const response = await fetch(editing ? `/api/whatsapp-connections/${editing.id}` : "/api/whatsapp-connections", { method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: data.get("name"), provider, endpointUrl: data.get("endpointUrl"), instanceName: data.get("instanceName"), apiToken: data.get("apiToken"), channelNumber: data.get("channelNumber"), active, attendants: [] }) });
       const result = await response.json() as { error?: string };
       if (!response.ok) throw new Error(result.error || "Não foi possível salvar a conexão.");
       setDialogOpen(false); toast.success(editing ? "Conexão atualizada" : "Conexão criada"); await loadConnections();
@@ -227,6 +227,14 @@ export function WhatsAppConnections() {
                 {provider === "zpro" && endpointPreview && <span className="break-all rounded-md bg-[#edf4ef] px-2 py-1.5 font-mono font-normal text-[#416052]">Endpoint: {endpointPreview}</span>}
               </Field>
             </div>
+            {provider === "zpro" && (
+              <div className="sm:col-span-2">
+                <Field label="Número do WhatsApp da conexão">
+                  <Input name="channelNumber" inputMode="tel" required defaultValue={editing?.channelNumber} placeholder="Ex.: 5511999999999" />
+                  <span className="font-normal text-[#71827a]">Informe o número do canal da ZPRO, com DDI 55. Ele não é o número do destinatário.</span>
+                </Field>
+              </div>
+            )}
             <label className="flex items-center justify-between rounded-xl bg-[#f3f7f4] p-4 text-sm font-semibold sm:col-span-2">Conexão ativa<Switch checked={active} onCheckedChange={setActive} /></label>
             <div className="flex justify-end gap-2 sm:col-span-2">
               <Button type="button" variant="ghost" onClick={() => setDialogOpen(false)}>Cancelar</Button>
