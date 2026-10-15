@@ -189,7 +189,8 @@ export async function POST(request: Request) {
     }
   }
 
-  const { data: connection, error } = await supabase
+  const admin = createSupabaseAdminClient();
+  const { data: connection, error } = await admin
     .from("whatsapp_connections")
     .insert({
       owner_id: user.id,
@@ -213,7 +214,7 @@ export async function POST(request: Request) {
     try {
       await saveConnectionToken(connection.id, parsed.data.apiToken);
     } catch (tokenError) {
-      await supabase
+      await admin
         .from("whatsapp_connections")
         .delete()
         .eq("id", connection.id)
