@@ -911,7 +911,7 @@ export function NinjaGreenApp({
         "O login será ativado quando o Supabase for configurado.",
       );
     await fetch("/api/auth/logout", { method: "POST" });
-    router.push("/login");
+    window.location.replace("/login");
   }
 
   return (
@@ -1189,6 +1189,8 @@ export function NinjaGreenApp({
         onOpenChange={setProfileOpen}
         profile={profile}
         onUpdated={setProfile}
+        onSignOut={signOut}
+        authEnabled={authEnabled}
       />
       <TagManager
         open={tagManagerOpen}

@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, PointerEvent, useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle2, CircleOff, Info, LoaderCircle, MessageCircle, Pencil, Plus, Trash2, UserRoundPlus, UsersRound, Webhook, Wifi } from "lucide-react";
 import { toast } from "sonner";
 
@@ -11,7 +11,6 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
-import { useBackClosable } from "@/hooks/use-back-closable";
 import { maskZproApiId, parseZproConnectionAddress } from "@/lib/whatsapp/zpro-connection";
 
 type Provider = "uazapi" | "baileys" | "evolution" | "evolution_go" | "zpro";
@@ -33,17 +32,39 @@ export function WhatsAppConnections() {
   const [apiId, setApiId] = useState("");
   const [channelHelpOpen, setChannelHelpOpen] = useState(false);
   const channelHelpHoverTimer = useRef<number | null>(null);
-  const channelHelpBack = useBackClosable(channelHelpOpen, () => setChannelHelpOpen(false));
+  const channelHelpOpenedByHover = useRef(false);
 
-  function openChannelHelpOnHover() {
+  function openChannelHelpOnHover(event: PointerEvent<HTMLSpanElement>) {
+    if (
+      event.pointerType !== "mouse" ||
+      !window.matchMedia("(hover: hover)").matches
+    )
+      return;
     if (channelHelpHoverTimer.current) window.clearTimeout(channelHelpHoverTimer.current);
-    channelHelpHoverTimer.current = window.setTimeout(() => setChannelHelpOpen(true), 150);
+    channelHelpHoverTimer.current = window.setTimeout(() => {
+      channelHelpOpenedByHover.current = true;
+      setChannelHelpOpen(true);
+    }, 150);
   }
 
   function closeChannelHelpOnHover() {
     if (channelHelpHoverTimer.current) window.clearTimeout(channelHelpHoverTimer.current);
     channelHelpHoverTimer.current = null;
-    if (channelHelpOpen) channelHelpBack.close();
+    if (!channelHelpOpenedByHover.current) return;
+    channelHelpOpenedByHover.current = false;
+    setChannelHelpOpen(false);
+  }
+
+  function toggleChannelHelp() {
+    if (channelHelpHoverTimer.current) window.clearTimeout(channelHelpHoverTimer.current);
+    channelHelpHoverTimer.current = null;
+    channelHelpOpenedByHover.current = false;
+    setChannelHelpOpen((current) => !current);
+  }
+
+  function changeChannelHelpOpen(open: boolean) {
+    if (!open) channelHelpOpenedByHover.current = false;
+    setChannelHelpOpen(open);
   }
 
   const loadConnections = useCallback(async () => {
@@ -226,21 +247,23 @@ export function WhatsAppConnections() {
                 {Object.entries(providerLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
               </select>
             </Field>
-            <Field label={provider === "zpro" ? "ApiID da sua ZPRO" : "Instância / sessão"}>
-              <Input
-                key={provider === "zpro" ? "zpro-api-id" : "provider-instance"}
-                name="instanceName"
-                required={provider === "zpro" && !editing}
-                value={provider === "zpro" ? apiId : undefined}
-                onChange={provider === "zpro" ? (event) => setApiId(event.target.value) : undefined}
-                defaultValue={provider === "zpro" ? undefined : editing?.instanceName}
-                placeholder={provider === "zpro" ? (editing?.apiIdMasked ? `Deixe vazio para manter ${editing.apiIdMasked}` : "UUID após /v2/api/external/") : "Nome ou ID da instância"}
-              />
-              {provider === "zpro" && <span className="font-normal text-[#71827a]">Você pode deixar este campo vazio ao colar o endpoint completo abaixo.</span>}
-            </Field>
-            <Field label={provider === "zpro" ? "Token Bearer da ZPRO" : "Token / chave de API"}>
-              <Input name="apiToken" type="password" required={provider === "zpro" && !editing} placeholder={editing?.hasToken ? "Deixe vazio para manter a chave" : "Token do provedor"} />
-            </Field>
+            <div className="grid items-start gap-4 sm:col-span-2 sm:grid-cols-2">
+              <Field label={provider === "zpro" ? "ApiID da sua ZPRO" : "Instância / sessão"}>
+                <Input
+                  key={provider === "zpro" ? "zpro-api-id" : "provider-instance"}
+                  name="instanceName"
+                  required={provider === "zpro" && !editing}
+                  value={provider === "zpro" ? apiId : undefined}
+                  onChange={provider === "zpro" ? (event) => setApiId(event.target.value) : undefined}
+                  defaultValue={provider === "zpro" ? undefined : editing?.instanceName}
+                  placeholder={provider === "zpro" ? (editing?.apiIdMasked ? `Deixe vazio para manter ${editing.apiIdMasked}` : "UUID após /v2/api/external/") : "Nome ou ID da instância"}
+                />
+              </Field>
+              <Field label={provider === "zpro" ? "Token Bearer da ZPRO" : "Token / chave de API"}>
+                <Input name="apiToken" type="password" required={provider === "zpro" && !editing} placeholder={editing?.hasToken ? "Deixe vazio para manter a chave" : "Token do provedor"} />
+              </Field>
+              {provider === "zpro" && <span className="font-normal text-[#71827a] sm:col-span-2">Você pode deixar o ApiID vazio ao colar o endpoint completo abaixo.</span>}
+            </div>
             <div className="sm:col-span-2">
               <Field label={provider === "zpro" ? "URL do backend da sua ZPRO *" : "URL base da API (opcional)"}>
                 <Input name="endpointUrl" type="url" required={provider === "zpro" && !editing} value={endpointUrl} onChange={(event) => updateEndpointUrl(event.target.value)} placeholder={provider === "zpro" ? (editing?.endpointConfigured ? "Deixe vazio para manter o backend atual" : "https://backend-da-sua-zpro.com") : "https://api.seu-provedor.com"} />
@@ -254,19 +277,19 @@ export function WhatsAppConnections() {
                   <label htmlFor="zpro-channel-id">ID do canal</label>
                   <Popover
                     open={channelHelpOpen}
-                    onOpenChange={(open) => open ? setChannelHelpOpen(true) : channelHelpBack.close()}
+                    onOpenChange={changeChannelHelpOpen}
                   >
                     <span
                       className="inline-flex"
-                      onMouseEnter={openChannelHelpOnHover}
-                      onMouseLeave={closeChannelHelpOnHover}
+                      onPointerEnter={openChannelHelpOnHover}
+                      onPointerLeave={closeChannelHelpOnHover}
                     >
                       <PopoverAnchor asChild>
                         <button
                           type="button"
                           aria-label="Como encontrar o ID do canal na ZPRO"
                           aria-expanded={channelHelpOpen}
-                          onClick={() => channelHelpOpen ? channelHelpBack.close() : setChannelHelpOpen(true)}
+                          onClick={toggleChannelHelp}
                           className="rounded-full p-0.5 text-[#5e7a6f] outline-none hover:bg-[#e7efe9] focus-visible:ring-2 focus-visible:ring-[#0b553f]"
                         >
                           <Info className="size-4" aria-hidden="true" />
