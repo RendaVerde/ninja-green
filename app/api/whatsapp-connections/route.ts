@@ -29,6 +29,7 @@ const connectionSchema = z
     endpointUrl: z.string().trim().url().or(z.literal("")).default(""),
     instanceName: z.string().trim().max(120).default(""),
     apiToken: z.string().trim().max(2000).default(""),
+    channelId: z.string().trim().max(20).default(""),
     active: z.boolean().default(true),
     attendants: z.array(attendantSchema).max(30).default([]),
   })
@@ -46,6 +47,16 @@ const connectionSchema = z
         code: "custom",
         path: ["apiToken"],
         message: "Informe o token da ZPRO.",
+      });
+    }
+    if (
+      !/^[1-9]\d*$/.test(value.channelId) ||
+      !Number.isSafeInteger(Number(value.channelId))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["channelId"],
+        message: "Informe um ID de canal inteiro e positivo.",
       });
     }
   });
@@ -77,7 +88,7 @@ export async function GET() {
   const { data: connections, error } = await supabase
     .from("whatsapp_connections")
     .select(
-      "id,owner_id,name,provider,endpoint_url,instance_name,active,created_at",
+      "id,owner_id,name,provider,endpoint_url,instance_name,channel_id,active,created_at",
     )
     .order("created_at", { ascending: false });
   if (error) {
@@ -125,6 +136,10 @@ export async function GET() {
         item.provider === "zpro" && item.owner_id === user.id
           ? maskApiId(item.instance_name)
           : "",
+      channelId:
+        item.provider === "zpro" && item.owner_id === user.id
+          ? item.channel_id
+          : null,
       active: item.active,
       owner: item.owner_id === user.id,
       hasToken: tokenConnectionIds.has(item.id),
@@ -189,7 +204,8 @@ export async function POST(request: Request) {
     }
   }
 
-  const { data: connection, error } = await supabase
+  const admin = createSupabaseAdminClient();
+  const { data: connection, error } = await admin
     .from("whatsapp_connections")
     .insert({
       owner_id: user.id,
@@ -198,6 +214,9 @@ export async function POST(request: Request) {
       endpoint_url: endpointUrl,
       instance_name: instanceName,
       api_token: null,
+      channel_number: null,
+      channel_id:
+        parsed.data.provider === "zpro" ? Number(parsed.data.channelId) : null,
       active: parsed.data.active,
     })
     .select("id")
@@ -213,7 +232,7 @@ export async function POST(request: Request) {
     try {
       await saveConnectionToken(connection.id, parsed.data.apiToken);
     } catch (tokenError) {
-      await supabase
+      await admin
         .from("whatsapp_connections")
         .delete()
         .eq("id", connection.id)

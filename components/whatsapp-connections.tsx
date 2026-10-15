@@ -1,19 +1,22 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
-import { CheckCircle2, CircleOff, LoaderCircle, MessageCircle, Pencil, Plus, Trash2, UserRoundPlus, UsersRound, Webhook, Wifi } from "lucide-react";
+import Image from "next/image";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { CheckCircle2, CircleOff, Info, LoaderCircle, MessageCircle, Pencil, Plus, Trash2, UserRoundPlus, UsersRound, Webhook, Wifi } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
+import { useBackClosable } from "@/hooks/use-back-closable";
 import { maskZproApiId, parseZproConnectionAddress } from "@/lib/whatsapp/zpro-connection";
 
 type Provider = "uazapi" | "baileys" | "evolution" | "evolution_go" | "zpro";
 type Attendant = { id: string; profileName: string; email: string; role: "attendant" | "manager"; linked: boolean };
-type Connection = { id: string; name: string; provider: Provider; endpointUrl: string; endpointConfigured: boolean; instanceName: string; apiIdMasked: string; active: boolean; owner: boolean; hasToken: boolean; attendants: Attendant[] };
+type Connection = { id: string; name: string; provider: Provider; endpointUrl: string; endpointConfigured: boolean; instanceName: string; apiIdMasked: string; channelId: number | null; active: boolean; owner: boolean; hasToken: boolean; attendants: Attendant[] };
 const providerLabels: Record<Provider, string> = { uazapi: "UazApi", baileys: "Baileys", evolution: "Evolution", evolution_go: "Evolution GO", zpro: "ZPRO" };
 
 export function WhatsAppConnections() {
@@ -28,6 +31,20 @@ export function WhatsAppConnections() {
   const [testingId, setTestingId] = useState<string | null>(null);
   const [endpointUrl, setEndpointUrl] = useState("");
   const [apiId, setApiId] = useState("");
+  const [channelHelpOpen, setChannelHelpOpen] = useState(false);
+  const channelHelpHoverTimer = useRef<number | null>(null);
+  const channelHelpBack = useBackClosable(channelHelpOpen, () => setChannelHelpOpen(false));
+
+  function openChannelHelpOnHover() {
+    if (channelHelpHoverTimer.current) window.clearTimeout(channelHelpHoverTimer.current);
+    channelHelpHoverTimer.current = window.setTimeout(() => setChannelHelpOpen(true), 150);
+  }
+
+  function closeChannelHelpOnHover() {
+    if (channelHelpHoverTimer.current) window.clearTimeout(channelHelpHoverTimer.current);
+    channelHelpHoverTimer.current = null;
+    if (channelHelpOpen) channelHelpBack.close();
+  }
 
   const loadConnections = useCallback(async () => {
     setLoading(true);
@@ -41,6 +58,9 @@ export function WhatsAppConnections() {
   }, []);
 
   useEffect(() => { const timer = window.setTimeout(() => void loadConnections(), 0); return () => window.clearTimeout(timer); }, [loadConnections]);
+  useEffect(() => () => {
+    if (channelHelpHoverTimer.current) window.clearTimeout(channelHelpHoverTimer.current);
+  }, []);
 
   function openCreate() { setEditing(null); setProvider("uazapi"); setActive(true); setEndpointUrl(""); setApiId(""); setDialogOpen(true); }
   function openEdit(connection: Connection) { setEditing(connection); setProvider(connection.provider); setActive(connection.active); setEndpointUrl(connection.provider === "zpro" ? "" : connection.endpointUrl); setApiId(""); setDialogOpen(true); }
@@ -71,7 +91,7 @@ export function WhatsAppConnections() {
     event.preventDefault(); setSaving(true);
     const data = new FormData(event.currentTarget);
     try {
-      const response = await fetch(editing ? `/api/whatsapp-connections/${editing.id}` : "/api/whatsapp-connections", { method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: data.get("name"), provider, endpointUrl: data.get("endpointUrl"), instanceName: data.get("instanceName"), apiToken: data.get("apiToken"), active, attendants: [] }) });
+      const response = await fetch(editing ? `/api/whatsapp-connections/${editing.id}` : "/api/whatsapp-connections", { method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: data.get("name"), provider, endpointUrl: data.get("endpointUrl"), instanceName: data.get("instanceName"), apiToken: data.get("apiToken"), channelId: data.get("channelId"), active, attendants: [] }) });
       const result = await response.json() as { error?: string };
       if (!response.ok) throw new Error(result.error || "Não foi possível salvar a conexão.");
       setDialogOpen(false); toast.success(editing ? "Conexão atualizada" : "Conexão criada"); await loadConnections();
@@ -208,6 +228,7 @@ export function WhatsAppConnections() {
             </Field>
             <Field label={provider === "zpro" ? "ApiID da sua ZPRO" : "Instância / sessão"}>
               <Input
+                key={provider === "zpro" ? "zpro-api-id" : "provider-instance"}
                 name="instanceName"
                 required={provider === "zpro" && !editing}
                 value={provider === "zpro" ? apiId : undefined}
@@ -227,6 +248,51 @@ export function WhatsAppConnections() {
                 {provider === "zpro" && endpointPreview && <span className="break-all rounded-md bg-[#edf4ef] px-2 py-1.5 font-mono font-normal text-[#416052]">Endpoint: {endpointPreview}</span>}
               </Field>
             </div>
+            {provider === "zpro" && (
+              <div className="grid gap-1.5 text-xs font-semibold text-[#4f675d] sm:col-span-2">
+                <div className="flex items-center gap-1.5">
+                  <label htmlFor="zpro-channel-id">ID do canal</label>
+                  <Popover
+                    open={channelHelpOpen}
+                    onOpenChange={(open) => open ? setChannelHelpOpen(true) : channelHelpBack.close()}
+                  >
+                    <span
+                      className="inline-flex"
+                      onMouseEnter={openChannelHelpOnHover}
+                      onMouseLeave={closeChannelHelpOnHover}
+                    >
+                      <PopoverAnchor asChild>
+                        <button
+                          type="button"
+                          aria-label="Como encontrar o ID do canal na ZPRO"
+                          aria-expanded={channelHelpOpen}
+                          onClick={() => channelHelpOpen ? channelHelpBack.close() : setChannelHelpOpen(true)}
+                          className="rounded-full p-0.5 text-[#5e7a6f] outline-none hover:bg-[#e7efe9] focus-visible:ring-2 focus-visible:ring-[#0b553f]"
+                        >
+                          <Info className="size-4" aria-hidden="true" />
+                        </button>
+                      </PopoverAnchor>
+                    </span>
+                    <PopoverContent align="start" className="w-[min(90vw,28rem)] max-w-full space-y-3">
+                      <div className="relative aspect-[4/3] w-full max-w-full overflow-hidden rounded-lg bg-[#f3f7f4]">
+                        <Image
+                          src="/help/zpro-canal-id.jpg"
+                          alt="Painel da ZPRO mostrando o ID do canal ao lado do nome da conexão"
+                          fill
+                          sizes="(max-width: 640px) 90vw, 28rem"
+                          className="object-contain"
+                        />
+                      </div>
+                      <p className="text-sm font-normal leading-relaxed text-[#4f675d]">
+                        No painel da ZPRO, o ID é o número com # ao lado do nome da conexão (ex.: #21).
+                      </p>
+                    </PopoverContent>
+                  </Popover>
+                </div>
+                <Input id="zpro-channel-id" name="channelId" inputMode="numeric" pattern="[1-9][0-9]*" required defaultValue={editing?.channelId ?? ""} placeholder="Ex.: 21" />
+                <span className="font-normal text-[#71827a]">Informe somente o número inteiro e positivo, sem o caractere #.</span>
+              </div>
+            )}
             <label className="flex items-center justify-between rounded-xl bg-[#f3f7f4] p-4 text-sm font-semibold sm:col-span-2">Conexão ativa<Switch checked={active} onCheckedChange={setActive} /></label>
             <div className="flex justify-end gap-2 sm:col-span-2">
               <Button type="button" variant="ghost" onClick={() => setDialogOpen(false)}>Cancelar</Button>

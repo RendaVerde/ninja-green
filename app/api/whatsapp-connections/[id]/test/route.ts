@@ -20,7 +20,7 @@ export async function POST(
   const { id } = await context.params;
   const { data: connection, error } = await supabase
     .from("whatsapp_connections")
-    .select("id,provider,endpoint_url,instance_name,active")
+    .select("id,provider,endpoint_url,instance_name,channel_id,active")
     .eq("id", id)
     .maybeSingle();
   if (error || !connection) {
@@ -41,6 +41,12 @@ export async function POST(
       { status: 400 },
     );
   }
+  if (!connection.channel_id) {
+    return NextResponse.json(
+      { error: "Informe o ID do canal antes de testar a conexão." },
+      { status: 400 },
+    );
+  }
 
   try {
     const credentials = await getConnectionCredentials(
@@ -49,12 +55,18 @@ export async function POST(
       connection.instance_name,
     );
     const provider = createWhatsAppProvider("zpro", credentials);
-    return NextResponse.json(await provider.testConnection());
+    const result = await provider.testConnection(connection.channel_id);
+    return NextResponse.json(result);
   } catch (testError) {
     if (testError instanceof WhatsAppProviderError) {
       return NextResponse.json(
         { error: testError.message, code: testError.code },
-        { status: testError.status >= 500 ? testError.status : 502 },
+        {
+          status:
+            testError.status >= 400 && testError.status <= 599
+              ? testError.status
+              : 502,
+        },
       );
     }
     return NextResponse.json(

@@ -20,6 +20,7 @@ const updateSchema = z.object({
   endpointUrl: z.string().trim().url().or(z.literal("")),
   instanceName: z.string().trim().max(120),
   apiToken: z.string().trim().max(2000).optional(),
+  channelId: z.string().trim().max(20).default(""),
   active: z.boolean(),
 });
 
@@ -69,8 +70,19 @@ export async function PATCH(
   const hasToken = tokenIds.has(id) || Boolean(parsed.data.apiToken);
   let apiId = parsed.data.instanceName || "";
   let endpointUrl = parsed.data.endpointUrl || null;
+  let channelId: number | null = null;
 
   if (parsed.data.provider === "zpro") {
+    if (
+      !/^[1-9]\d*$/.test(parsed.data.channelId) ||
+      !Number.isSafeInteger(Number(parsed.data.channelId))
+    ) {
+      return NextResponse.json(
+        { error: "Informe um ID de canal inteiro e positivo." },
+        { status: 400 },
+      );
+    }
+    channelId = Number(parsed.data.channelId);
     endpointUrl =
       endpointUrl ||
       (current.provider === "zpro" ? current.endpoint_url : null);
@@ -115,6 +127,8 @@ export async function PATCH(
       instance_name:
         parsed.data.provider === "zpro" ? apiId : parsed.data.instanceName || null,
       api_token: null,
+      channel_number: null,
+      channel_id: channelId,
       active: parsed.data.active,
       updated_at: new Date().toISOString(),
     })

@@ -20,6 +20,8 @@ type ZproPayload = Record<string, unknown> & {
   messageId?: string;
   ticketId?: string | number;
   status?: string;
+  id?: string | number;
+  data?: Record<string, unknown>;
 };
 
 function providerError(payload: ZproPayload, responseStatus: number) {
@@ -59,7 +61,42 @@ export class ZproWhatsAppProvider implements WhatsAppProvider {
         cache: "no-store",
         signal: controller.signal,
       });
-      const payload = (await response.json().catch(() => ({}))) as ZproPayload;
+      const responseBody = await response.text();
+      if (suffix === "/showChannelById") {
+        if (response.status === 401 || response.status === 403) {
+          throw new WhatsAppProviderError(
+            "Credencial ZPRO inválida.",
+            "ZPRO_INVALID_CREDENTIALS",
+            response.status,
+          );
+        }
+        if (response.status >= 500) {
+          throw new WhatsAppProviderError(
+            "A ZPRO apresentou um erro ao consultar o canal.",
+            "ZPRO_SERVER_ERROR",
+            response.status,
+          );
+        }
+        if (response.status === 404 || !responseBody) {
+          throw new WhatsAppProviderError(
+            "Canal ZPRO não encontrado para o ID informado.",
+            "ZPRO_CHANNEL_NOT_FOUND",
+            404,
+          );
+        }
+      }
+      let payload: ZproPayload = {};
+      if (responseBody) {
+        try {
+          payload = JSON.parse(responseBody) as ZproPayload;
+        } catch {
+          throw new WhatsAppProviderError(
+            "A ZPRO retornou uma resposta inválida.",
+            "ZPRO_INVALID_RESPONSE",
+            502,
+          );
+        }
+      }
       if (!response.ok || payload.success === false) {
         throw providerError(payload, response.status);
       }
@@ -74,7 +111,7 @@ export class ZproWhatsAppProvider implements WhatsAppProvider {
         );
       }
       throw new WhatsAppProviderError(
-        "Não foi possível conectar à ZPRO.",
+        "Não foi possível conectar à ZPRO. Verifique a BaseUrl.",
         "ZPRO_CONNECTION_ERROR",
         502,
       );
@@ -122,13 +159,31 @@ export class ZproWhatsAppProvider implements WhatsAppProvider {
     };
   }
 
-  async testConnection(): Promise<WhatsAppConnectionTestResult> {
-    const payload = await this.request("/showChannel");
+  async testConnection(channelId?: number): Promise<WhatsAppConnectionTestResult> {
+    if (!channelId || !Number.isSafeInteger(channelId) || channelId <= 0) {
+      throw new WhatsAppProviderError(
+        "Informe um ID de canal válido antes de testar.",
+        "ZPRO_CHANNEL_ID_REQUIRED",
+        400,
+      );
+    }
+    const payload = await this.request("/showChannelById", {
+      id: channelId,
+    });
     const status =
       typeof payload.status === "string"
         ? payload.status
+        : typeof payload.data?.status === "string"
+          ? payload.data.status
         : typeof payload.state === "string"
           ? payload.state
+          : undefined;
+    const rawChannelId = payload.id ?? payload.data?.id;
+    const returnedChannelId =
+      typeof rawChannelId === "number"
+        ? rawChannelId
+        : typeof rawChannelId === "string" && /^\d+$/.test(rawChannelId)
+          ? Number(rawChannelId)
           : undefined;
     return {
       ok: true,
@@ -136,6 +191,10 @@ export class ZproWhatsAppProvider implements WhatsAppProvider {
         ? `Conexão ZPRO disponível (${status}).`
         : "Conexão ZPRO validada com sucesso.",
       channelStatus: status,
+      channelId:
+        returnedChannelId !== undefined && Number.isSafeInteger(returnedChannelId)
+          ? returnedChannelId
+          : undefined,
     };
   }
 }

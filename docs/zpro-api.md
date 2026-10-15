@@ -34,7 +34,12 @@ O Ninja Green usa a rota por URL com links temporários assinados do Supabase St
 
 ## Testar conexão/status
 
-`POST https://{BaseUrl}/v2/api/external/{ApiID}/showChannel`, com Bearer token e sem body documentado. Usar como teste de credenciais/canal; tratar HTTP não-2xx, JSON inválido ou `success: false` como falha. O formato detalhado da resposta não está descrito na coleção.
+> **Correção do contrato:** a coleção pública do Postman omite os corpos obrigatórios destas rotas. O comportamento validado diretamente com a API da ZPRO é a fonte de verdade usada pelo Ninja Green.
+
+- `POST https://{BaseUrl}/v2/api/external/{ApiID}/showChannelById`, com Bearer token, `Content-Type: application/json` e body `{ "id": 21 }`, onde `id` é o identificador inteiro e positivo exibido com `#` ao lado do nome da conexão no painel da ZPRO.
+- `POST https://{BaseUrl}/v2/api/external/{ApiID}/showChannel`, com body `{ "number": "5511999999999" }`, existe, mas a consulta por número é pouco confiável: em conexões feitas por QR code, o número não é associado ao canal como acontece na vinculação manual e a rota pode responder que o canal não foi encontrado.
+
+O Ninja Green usa somente `/showChannelById` para o teste de leitura. O ID do canal é a identidade persistida da conexão; o campo `number` da rota de envio continua sendo exclusivamente o número do destinatário. Conexões antigas continuam válidas, mas precisam receber o ID antes do primeiro teste. Tratar 401/403 como credencial inválida, 404 ou resposta vazia como canal não encontrado, 5xx como erro da ZPRO e falha de rede/URL como BaseUrl incorreta.
 
 Para consultar uma mensagem: `GET /v2/api/external/{ApiID}/getMessageByMessageId?messageId={wamid}`, também com Bearer token.
 
