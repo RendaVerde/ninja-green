@@ -1,40 +1,42 @@
 # Handoff — Integração ZPRO
 
-## Estado
-- Pedido: integrar ZPRO multi-tenant ao follow-up e às mensagens rápidas, com texto e anexos reais.
-- M1: contrato documentado, provedor comum, credenciais privadas e teste de conexão (`81e9e64`, `c2573e5`).
-- M2: texto real, fallback manual, histórico, erros e idempotência (`c30ee22`).
-- Revisão M1/M2: backend ou endpoint completo, extração do ApiID, etapa correta e prevenção de envio duplo (`2c942a0`).
-- M3: imagens, vídeos e PDFs por URL assinada, nos dois fluxos (`b261c07`).
-- Integração publicada na `main` pelo merge `f91652e`.
-- Falta validar envios reais com uma instância ZPRO e um número de teste autorizado.
-- Webhooks de entrega/resposta e acionamento de `pause_on_reply` ainda não foram implementados.
+## 1. Estado
+- Branch atual: main, sincronizada com origin/main no momento da verificação.
+- Commits da integração: c2573e5, c30ee22, 2c942a0, b261c07, f91652e, 221178b, 9e51ffb, a53af89, 34aa341 e 89f312a.
+- Conexão ZPRO privada por usuário e CRUD: feito.
+- Teste por ID do canal e mensagens claras de erro: feito.
+- Ajuda do ID, alinhamento ApiID/Token e logout mobile: feito.
+- Envio real de texto pela ZPRO no follow-up e nas mensagens rápidas (antigo M2): feito, acionado pelo usuário; não é ainda um despachante automático agendado.
+- Envio real de mídia por URL nos dois fluxos: feito no código.
+- Validação ponta a ponta com envio autorizado e confirmação de recebimento: pendente.
+- Webhooks de entrega/resposta e pause_on_reply: pendente.
 
-## Decisões
-- Cada usuário informa o backend da própria ZPRO; a URL do painel não participa da integração.
-- O endpoint completo pode ser colado para extrair o ApiID, reduzindo erro de configuração.
-- Backend, ApiID completo e token permanecem no servidor; a interface mostra apenas estado e máscara.
-- Texto usa a rota externa principal; mídia usa `/url` com link temporário do Storage.
-- Base64 e multipart foram descartados: URL evita processamento extra e atende o contrato conhecido.
-- Sem conexão ativa, preserva-se o envio manual por `wa.me`.
-- Arquivos são sequenciais e usam chaves determinísticas para reduzir duplicação em retries.
+## 2. Banco
+- 202610131000_zpro_connection_secrets.sql: tabela privada de tokens; efeito presente no Supabase configurado em .env.local.
+- 202610131700_zpro_message_delivery.sql: metadados de entrega/erro; efeito presente no Supabase configurado em .env.local.
+- 202610151200_add_zpro_channel_identity.sql: channel_number legado e channel_id; efeito final presente no Supabase configurado.
+- 202610151600_use_zpro_channel_id.sql: consolida channel_id e documenta channel_number como legado; histórico individual de aplicação não verificado.
+- Não foi possível classificar o projeto configurado como desenvolvimento ou produção; aplicação em produção: não verificado.
+- Há 1 conexão ZPRO com ID do canal no projeto configurado; se ela foi criada exclusivamente pelo teste: não verificado. Nenhum envio real foi feito nestes testes de conexão.
 
-## Armadilhas
-- As primeiras alterações foram feitas em um clone porque o HD `F:` estava desconectado; tudo foi reaplicado e validado em `F:\ninja-green`.
-- ZPRO possui frontend e backend distintos; usar o frontend torna os endpoints inválidos.
-- O ApiID pode estar embutido após `/v2/api/external/`; duplicar esse trecho quebrava a URL.
-- O follow-up selecionava sempre a primeira etapa, ignorando `current_step`; isso foi corrigido.
-- Uma troca de modo entre prévia e envio podia abrir `wa.me` e também usar ZPRO; o modo manual agora é fixado na requisição.
-- Links assinados dentro do corpo podiam exceder o limite; anexos agora viajam separadamente.
-- Não há migração nova neste conjunto; ele depende das migrações ZPRO e Storage já existentes no projeto.
+## 3. Decisões e por quê
+- Cada usuário mantém sua conexão em whatsapp_connections: BaseUrl, ApiID, token Bearer privado e ID do canal, sob o RLS existente.
+- “Testar conexão” usa POST /showChannelById com corpo contendo id porque /showChannel por número falha em canais conectados por QR code.
+- O envio usa /v2/api/external/{ApiID}; number identifica o destinatário e externalKey é única para evitar duplicação.
+- Foram descartados: número do canal como identidade, /showChannel como teste principal, token no cliente e envio base64/multipart; mídia usa URL assinada.
 
-## Arquivos-chave
-- `docs/zpro-api.md`: contrato conhecido da API ZPRO.
-- `lib/whatsapp/`: interface, fábrica, resolução, configuração e implementação ZPRO.
-- `lib/outbound-messages.ts`: reserva, retry, envio, fallback e histórico.
-- `app/api/whatsapp-connections/`: CRUD, atendentes e teste da conexão.
-- `app/api/messages/` e `app/api/quick-sends/`: entradas de follow-up e mensagens rápidas.
-- `lib/message-attachment-links.ts`: geração e validação de URLs assinadas.
+## 4. Armadilhas
+- use-back-closable fechava pela UI e pelo efeito, chamando history.back() várias vezes; agora cada abertura possui uma entrada marcada e o popover pequeno não usa histórico.
+- O texto auxiliar do ApiID desalinhava o rótulo do token; a ajuda foi movida para uma linha própria.
+- O logout existia só no desktop; “Sair” agora fica no perfil mobile e redireciona com replace.
+- A coleção Postman omite corpos obrigatórios; /showChannel pode retornar erro ou vazio em conexão por QR code.
+- Ainda frágeis: contrato de webhooks não verificado, ausência de teste automatizado e falta de validação real autorizada dos envios.
 
-## Próximo passo exato
-- Com autorização e número de teste, enviar texto, imagem, vídeo e PDF pelos dois fluxos; conferir recebimento, status e histórico antes de iniciar os webhooks.
+## 5. Onde fica cada coisa
+- lib/whatsapp/: contrato, fábrica, resolução, configuração e cliente ZPRO.
+- components/whatsapp-connections.tsx: cadastro, edição, teste e ajuda; hooks/use-back-closable.ts: histórico dos overlays.
+- app/api/whatsapp-connections/: CRUD e teste; app/api/messages/ e app/api/quick-sends/: entradas de envio.
+- lib/outbound-messages.ts: reserva, idempotência, envio e histórico; docs/zpro-api.md: contrato validado.
+
+## 6. Próximo passo
+- Planejar o envio automático real que substitui o M2 antigo: fila única, despachante, agendador, horários por etapa e escolha explícita da conexão.
