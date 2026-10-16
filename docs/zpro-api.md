@@ -16,7 +16,7 @@ Fonte: coleção pública **Z-PRO v4.x.x.x** no Postman, consultada em 13/10/202
 
 - `body`: texto final da mensagem.
 - `number`: WhatsApp com DDI, somente dígitos, por exemplo `5511999999999`.
-- `externalKey`: chave única criada pelo sistema cliente; não pode se repetir.
+- `externalKey`: chave da operação criada pelo sistema cliente. No M1 é o UUID da linha em `messages`. Dois testes reais confirmaram deduplicação para chamadas repetidas com a mesma chave e o mesmo payload; o prazo de retenção da chave não foi testado.
 - `isClosed`: fecha o ticket depois do envio (`false` no Ninja Green).
 - `validateNumber`: opcional, padrão `true`; `false` mantém o número exatamente como enviado e é recomendado pela documentação apenas para WABA em casos de duplicação pelo nono dígito.
 
@@ -30,7 +30,15 @@ As rotas usam o mesmo Bearer token e os mesmos campos `body`, `number`, `externa
 - Por URL: `POST /v2/api/external/{ApiID}/url` com JSON e `mediaUrl` apontando para o arquivo, além dos campos comuns.
 - A coleção também documenta envio em JSON/base64 e informa teto de **50 MB para o body JSON**. Não implementar até validar o payload completo.
 
-O Ninja Green usa a rota por URL com links temporários assinados do Supabase Storage. Cada arquivo recebe uma `externalKey` determinística no formato `{messageId}-media-{posição}`; não usamos base64 nem multipart nesta implementação.
+No M1, a fila envia apenas texto. Mensagens com anexos continuam no fluxo manual por `wa.me`. A fila mantém uma linha por operação para permitir mídia em uma entrega futura.
+
+## Resultado incerto e teste de chave repetida
+
+Em 16/10/2026, às 10:07 (America/Sao_Paulo), o proprietário confirmou o teste para o número terminado em **7376**. A primeira chamada, com `externalKey` `8797f410-3bdd-40b0-8d15-aaa9a5c8da57`, retornou HTTP **502**, erro `backend_offline`, sem `idFront`/`messageId` nem `ticketId`. A segunda chamada foi interrompida por segurança porque a primeira não confirmou aceitação.
+
+Em seguida, dois pares de chamadas reais, cada par com o mesmo payload e a mesma `externalKey`, foram feitos para esse número. As chaves foram `97b8ff4c-ce1f-4155-8002-848153e78a0f` e `d5ace5e8-874c-4163-8b19-f71e0f1e62b5`. **Todas as quatro respostas foram HTTP 200, `success: true`, sem identificador de mensagem ou ticket; o proprietário confirmou uma mensagem recebida por par, duas no total.** Nesse cenário, a ZPRO deduplicou por `externalKey` e respondeu da mesma forma à primeira e à segunda chamada. Não foi testado por quanto tempo a ZPRO retém a chave, nem o comportamento de uma repetição após timeout ou erro 5xx.
+
+A regra planejada de retry para resultados ambíguos está em `docs/outbound-plan.md`. Até sua implementação, o M1 mantém esses resultados como **Envio incerto**, sem retry automático. Falhas 4xx que demonstram rejeição anterior ao envio ficam como falhas definitivas.
 
 ## Testar conexão/status
 
@@ -45,4 +53,4 @@ Para consultar uma mensagem: `GET /v2/api/external/{ApiID}/getMessageByMessageId
 
 ## Webhooks, erros e limites
 
-A coleção menciona webhooks e correlação por `externalKey`, `ticketId` e `idFront`, mas **não expõe contrato de configuração nem payloads de entrega/resposta**. Não implementar webhook sem documentação adicional ou export da coleção. Para todos os requests: aplicar timeout, não registrar credenciais, preservar o código `ERR_*` no histórico técnico e mostrar mensagem segura ao usuário. A coleção declara não haver rate limit; mesmo assim, o Ninja Green deve manter intervalo configurável em lotes e idempotência por `externalKey`.
+A coleção menciona webhooks e correlação por `externalKey`, `ticketId` e `idFront`, mas **não expõe contrato de configuração nem payloads de entrega/resposta**. Não implementar webhook sem documentação adicional ou export da coleção. Para todos os requests: aplicar timeout, não registrar credenciais, preservar o código `ERR_*` no histórico técnico e mostrar mensagem segura ao usuário. A coleção declara não haver rate limit; o Ninja Green limita o lote e os envios diários por conexão. O intervalo entre envios fica para o agendador do M2.

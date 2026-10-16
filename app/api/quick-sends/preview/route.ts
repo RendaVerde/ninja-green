@@ -14,6 +14,7 @@ const previewSchema = z.object({
   tagIds: z.array(z.string().uuid()).max(100).default([]),
   contactIds: z.array(z.string().uuid()).max(2000).default([]),
   limit: z.number().int().min(1).max(2000),
+  connectionId: z.string().uuid().nullable().optional(),
 });
 
 type ResolvedContact = {
@@ -26,6 +27,7 @@ type ResolvedContact = {
   origin: string;
   status: MessageContact["status"];
   note: string | null;
+  do_not_contact: boolean;
 };
 
 function toMessageContact(contact: ResolvedContact): MessageContact {
@@ -58,17 +60,43 @@ export async function POST(request: Request) {
   if (messageError) return NextResponse.json({ error: "Não foi possível carregar a mensagem rápida." }, { status: 500 });
   if (!quickMessage) return NextResponse.json({ error: "Mensagem rápida não encontrada." }, { status: 404 });
 
-  const { data: zproConnection, error: connectionError } = await supabase
+  const { data: zproConnections, error: connectionError } = await supabase
     .from("whatsapp_connections")
-    .select("id")
+    .select("id,name,health_status")
+    .eq("owner_id", user.id)
     .eq("provider", "zpro")
     .eq("active", true)
-    .limit(1)
-    .maybeSingle();
+    .order("created_at", { ascending: false });
   if (connectionError) {
     return NextResponse.json(
       { error: "Não foi possível verificar o modo de envio." },
       { status: 500 },
+    );
+  }
+  const requestedConnection = parsed.data.connectionId
+    ? (zproConnections || []).find(
+        (connection) => connection.id === parsed.data.connectionId,
+      )
+    : null;
+  if (parsed.data.connectionId && !requestedConnection) {
+    return NextResponse.json(
+      { error: "A conexão selecionada não está disponível." },
+      { status: 400 },
+    );
+  }
+  const zproConnection =
+    requestedConnection ||
+    ((zproConnections || []).length === 1 ? zproConnections![0] : null);
+  if ((zproConnections || []).length > 1 && !zproConnection) {
+    return NextResponse.json(
+      { error: "Escolha qual conexão WhatsApp deve realizar o envio." },
+      { status: 409 },
+    );
+  }
+  if (zproConnection?.health_status === "error") {
+    return NextResponse.json(
+      { error: "A conexão selecionada está com erro. Teste ou corrija a conexão antes de enviar." },
+      { status: 409 },
     );
   }
 
@@ -91,7 +119,7 @@ export async function POST(request: Request) {
   if (resolvedIds.length > 0) {
     const { data, error } = await supabase
       .from("contacts")
-      .select("id,name,phone,email,kind,interest,origin,status,note")
+      .select("id,name,phone,email,kind,interest,origin,status,note,do_not_contact")
       .eq("owner_id", user.id)
       .in("id", resolvedIds)
       .order("name", { ascending: true });
@@ -99,8 +127,9 @@ export async function POST(request: Request) {
     contacts = (data ?? []) as ResolvedContact[];
   }
 
-  const withoutWhatsApp = contacts.filter((contact) => !normalizeWhatsAppPhone(contact.phone));
-  const eligible = contacts.filter((contact) => normalizeWhatsAppPhone(contact.phone));
+  const doNotContact = contacts.filter((contact) => contact.do_not_contact);
+  const withoutWhatsApp = contacts.filter((contact) => !contact.do_not_contact && !normalizeWhatsAppPhone(contact.phone));
+  const eligible = contacts.filter((contact) => !contact.do_not_contact && normalizeWhatsAppPhone(contact.phone));
   const selected = eligible.slice(0, parsed.data.limit);
   const overLimit = eligible.slice(parsed.data.limit);
 
@@ -115,7 +144,9 @@ export async function POST(request: Request) {
       body: rendered.text,
       whatsappUrl: buildWhatsAppUrl(
         contact.phone,
-        zproConnection ? rendered.text : manualBody,
+        zproConnection && !(quickMessage.attachments || []).length
+          ? rendered.text
+          : manualBody,
       ),
       unknownVariables: rendered.unknownVariables,
       attachments: (quickMessage.attachments || []) as MessageAttachment[],
@@ -123,12 +154,17 @@ export async function POST(request: Request) {
   });
 
   return NextResponse.json({
-    deliveryMode: zproConnection ? "provider" : "manual",
+    deliveryMode:
+      zproConnection && !(quickMessage.attachments || []).length
+        ? "provider"
+        : "manual",
+    connectionId: zproConnection?.id || null,
     message: { id: quickMessage.id, title: quickMessage.title },
     matchedCount: contacts.length,
     recipientCount: recipients.length,
     recipients,
     excluded: [
+      ...doNotContact.map((contact) => ({ contactId: contact.id, contactName: contact.name, reason: "Não contatar" })),
       ...withoutWhatsApp.map((contact) => ({ contactId: contact.id, contactName: contact.name, reason: "Sem WhatsApp" })),
       ...overLimit.map((contact) => ({ contactId: contact.id, contactName: contact.name, reason: "Fora do limite deste envio" })),
     ],

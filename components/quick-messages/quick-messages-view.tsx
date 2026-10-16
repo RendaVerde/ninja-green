@@ -58,11 +58,21 @@ type PreviewRecipient = {
 type PreviewPayload = {
   error?: string;
   deliveryMode?: "provider" | "manual";
+  connectionId?: string | null;
   message?: { id: string; title: string };
   matchedCount?: number;
   recipientCount?: number;
   recipients?: PreviewRecipient[];
   excluded?: Array<{ contactId: string; contactName: string; reason: string }>;
+};
+
+type SendConnection = {
+  id: string;
+  name: string;
+  provider: string;
+  active: boolean;
+  owner: boolean;
+  healthStatus?: "unknown" | "ready" | "unavailable" | "error";
 };
 
 type QuickMessagesViewProps = {
@@ -109,6 +119,8 @@ export function QuickMessagesView({
   const [recordedIds, setRecordedIds] = useState<string[]>([]);
   const [queueBusy, setQueueBusy] = useState(false);
   const [cooldown, setCooldown] = useState(0);
+  const [sendConnections, setSendConnections] = useState<SendConnection[]>([]);
+  const [selectedConnectionId, setSelectedConnectionId] = useState("");
 
   const closeEditor = useCallback(() => setEditorOpen(false), []);
   const closeSend = useCallback(() => {
@@ -119,6 +131,8 @@ export function QuickMessagesView({
     setOpenedIds([]);
     setRecordedIds([]);
     setCooldown(0);
+    setSendConnections([]);
+    setSelectedConnectionId("");
   }, []);
   const editorBack = useBackClosable(editorOpen, closeEditor);
   const sendBack = useBackClosable(sendOpen, closeSend);
@@ -274,6 +288,26 @@ export function QuickMessagesView({
     toast.success("Mensagem excluída");
   }
 
+  async function loadSendConnections() {
+    const [connectionsResponse, settingsResponse] = await Promise.all([
+      fetch("/api/whatsapp-connections", { cache: "no-store" }),
+      fetch("/api/outbound/settings", { cache: "no-store" }),
+    ]);
+    const connectionsPayload = await connectionsResponse.json().catch(() => ({})) as { error?: string; connections?: SendConnection[] };
+    const settingsPayload = await settingsResponse.json().catch(() => ({})) as { error?: string; lastUsedConnectionId?: string | null };
+    if (!connectionsResponse.ok || !settingsResponse.ok) {
+      throw new Error(connectionsPayload.error || settingsPayload.error || "Não foi possível carregar as conexões de envio.");
+    }
+    const available = (connectionsPayload.connections || []).filter(
+      (connection) => connection.owner && connection.provider === "zpro" && connection.active,
+    );
+    setSendConnections(available);
+    const preferred = available.find(
+      (connection) => connection.id === settingsPayload.lastUsedConnectionId,
+    );
+    setSelectedConnectionId(preferred?.id || (available.length === 1 ? available[0].id : ""));
+  }
+
   function openSend(message: QuickMessage) {
     setSelectedMessageId(message.id);
     setAudience("Todos os contatos");
@@ -282,6 +316,9 @@ export function QuickMessagesView({
     setPreview(null);
     setSendPhase("audience");
     setSendOpen(true);
+    void loadSendConnections().catch((error) => {
+      toast.error(error instanceof Error ? error.message : "Não foi possível carregar as conexões de envio.");
+    });
   }
 
   async function reviewSend() {
@@ -315,6 +352,7 @@ export function QuickMessagesView({
           tagIds: selectedTagIds,
           contactIds: selectedContactIds,
           limit: parsedLimit,
+          connectionId: selectedConnectionId || null,
         }),
       });
       const payload = (await response
@@ -363,11 +401,13 @@ export function QuickMessagesView({
           body: currentRecipient.body,
           manual: Boolean(openedManually),
           attachments: currentRecipient.attachments,
+          confirmed: true,
+          connectionId: preview?.connectionId || selectedConnectionId || null,
         }),
       });
       const payload = (await response.json().catch(() => ({}))) as {
         error?: string;
-        mode?: "provider" | "manual";
+        mode?: "queue" | "manual";
         whatsappUrl?: string | null;
       };
       if (!response.ok)
@@ -391,7 +431,7 @@ export function QuickMessagesView({
       toast.success(
         payload.mode === "manual"
           ? "WhatsApp aberto e atividade registrada."
-          : "Mensagem enviada pela ZPRO.",
+          : "Mensagem adicionada à fila de envio.",
       );
       return true;
     } catch (error) {
@@ -627,6 +667,25 @@ export function QuickMessagesView({
                 onTagCreated={onTagCreated}
                 contextLabel="envio"
               />
+              {sendConnections.length > 0 ? (
+                <label className="grid gap-1.5 text-xs font-semibold text-[#4f675d]">
+                  Conexão de envio
+                  <select
+                    value={selectedConnectionId}
+                    onChange={(event) => setSelectedConnectionId(event.target.value)}
+                    className="h-10 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+                  >
+                    {sendConnections.length > 1 && <option value="">Selecione uma conexão</option>}
+                    {sendConnections.map((connection) => (
+                      <option key={connection.id} value={connection.id} disabled={connection.healthStatus === "error" || connection.healthStatus === "unavailable"}>
+                        {connection.name}{connection.healthStatus === "error" ? " (com erro)" : connection.healthStatus === "unavailable" ? " (indisponível)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <div className="rounded-xl bg-[#f3f7f4] p-4 text-xs text-[#5f746a]">Nenhuma conexão ativa. O envio usará o fallback manual pelo WhatsApp.</div>
+              )}
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className="grid gap-1.5 text-xs font-semibold text-[#4f675d]">
                   Limite deste envio

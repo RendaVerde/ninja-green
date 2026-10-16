@@ -14,6 +14,7 @@ type ContactRow = {
   origin: string;
   status: "Novo" | "Em contato" | "Respondeu" | "Qualificado";
   note: string | null;
+  do_not_contact: boolean;
   created_at: string;
 };
 
@@ -79,10 +80,10 @@ export async function GET() {
 
   try {
   const [contactsResult, sequencesResult, linksResult, messagesResult, tagsResult, contactTagsResult] = await Promise.all([
-    runQuery("contacts", supabase.from("contacts").select("id,name,phone,email,kind,interest,origin,status,note,created_at").eq("owner_id", user.id).order("created_at", { ascending: false })),
+    runQuery("contacts", supabase.from("contacts").select("id,name,phone,email,kind,interest,origin,status,note,do_not_contact,created_at").eq("owner_id", user.id).order("created_at", { ascending: false })),
     runQuery("sequences", supabase.from("sequences").select("id,name,audience,pause_on_reply,active,created_at,updated_at").eq("owner_id", user.id).order("created_at", { ascending: true })),
     runQuery("contact_sequences", supabase.from("contact_sequences").select("contact_id,sequence_id,current_step,next_run_at,paused_at,completed_at").is("completed_at", null)),
-    runQuery("messages", supabase.from("messages").select("id,contact_id,direction,body,status,provider,provider_error_message,sent_at,created_at").eq("owner_id", user.id).order("created_at", { ascending: false }).limit(100)),
+    runQuery("messages", supabase.from("messages").select("id,contact_id,direction,body,status,queue_status,provider,provider_error_message,sent_at,scheduled_at,created_at").eq("owner_id", user.id).order("created_at", { ascending: false }).limit(250)),
     runQuery("tags", supabase.from("tags").select("id,name,color,created_at,updated_at").eq("user_id", user.id).order("name")),
     runQuery("contact_tags", supabase.from("contact_tags").select("contact_id,tag_id").eq("user_id", user.id)),
   ]);
@@ -103,6 +104,7 @@ export async function GET() {
       origin: contact.origin,
       status: contact.status,
       note: contact.note || "",
+      doNotContact: Boolean(contact.do_not_contact),
       tagIds: (contactTagsResult.data || []).filter((link) => link.contact_id === contact.id).map((link) => link.tag_id),
       sequenceId: link?.sequence_id || null,
       currentStep: link?.current_step ?? null,
@@ -113,9 +115,10 @@ export async function GET() {
       createdAt: contact.created_at,
       history: contactMessages.slice(0, 10).map((message) => ({
         id: message.id,
-        title: message.direction === "inbound" ? "Resposta recebida" : message.status === "failed" ? "Falha no envio" : message.status === "sent" ? `Enviada via ${message.provider === "zpro" ? "ZPRO" : "WhatsApp"}` : message.status === "opened" ? "WhatsApp aberto" : "Mensagem registrada",
+        title: message.direction === "inbound" ? "Resposta recebida" : message.queue_status === "unknown" ? "Envio incerto" : message.queue_status === "pending" ? "Mensagem agendada" : message.queue_status === "sending" ? "Enviando mensagem" : message.queue_status === "failed" || message.status === "failed" ? "Falha no envio" : message.queue_status === "sent" || message.status === "sent" ? `Enviada via ${message.provider === "zpro" ? "ZPRO" : "WhatsApp"}` : message.status === "opened" ? "WhatsApp aberto" : message.queue_status === "canceled" ? "Envio cancelado" : "Mensagem registrada",
         detail: message.status === "failed" && message.provider_error_message ? `${message.body}\n\nErro: ${message.provider_error_message}` : message.body,
-        time: formatRelative(message.sent_at || message.created_at),
+        time: formatRelative(message.sent_at || message.scheduled_at || message.created_at),
+        queueStatus: message.queue_status || null,
       })),
     };
   });

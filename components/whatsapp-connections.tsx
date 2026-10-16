@@ -15,7 +15,7 @@ import { maskZproApiId, parseZproConnectionAddress } from "@/lib/whatsapp/zpro-c
 
 type Provider = "uazapi" | "baileys" | "evolution" | "evolution_go" | "zpro";
 type Attendant = { id: string; profileName: string; email: string; role: "attendant" | "manager"; linked: boolean };
-type Connection = { id: string; name: string; provider: Provider; endpointUrl: string; endpointConfigured: boolean; instanceName: string; apiIdMasked: string; channelId: number | null; active: boolean; owner: boolean; hasToken: boolean; attendants: Attendant[] };
+type Connection = { id: string; name: string; provider: Provider; endpointUrl: string; endpointConfigured: boolean; instanceName: string; apiIdMasked: string; channelId: number | null; active: boolean; owner: boolean; hasToken: boolean; dailyLimit: number; healthStatus: "unknown" | "ready" | "unavailable" | "error"; healthError?: string | null; attendants: Attendant[] };
 const providerLabels: Record<Provider, string> = { uazapi: "UazApi", baileys: "Baileys", evolution: "Evolution", evolution_go: "Evolution GO", zpro: "ZPRO" };
 
 export function WhatsAppConnections() {
@@ -31,6 +31,9 @@ export function WhatsAppConnections() {
   const [endpointUrl, setEndpointUrl] = useState("");
   const [apiId, setApiId] = useState("");
   const [channelHelpOpen, setChannelHelpOpen] = useState(false);
+  const [automaticSendingEnabled, setAutomaticSendingEnabled] = useState(false);
+  const [pauseAll, setPauseAll] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
   const channelHelpHoverTimer = useRef<number | null>(null);
   const channelHelpOpenedByHover = useRef(false);
 
@@ -78,7 +81,19 @@ export function WhatsAppConnections() {
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { const timer = window.setTimeout(() => void loadConnections(), 0); return () => window.clearTimeout(timer); }, [loadConnections]);
+  const loadSettings = useCallback(async () => {
+    try {
+      const response = await fetch("/api/outbound/settings", { cache: "no-store" });
+      const result = await response.json() as { error?: string; automaticSendingEnabled?: boolean; pauseAll?: boolean };
+      if (!response.ok) throw new Error(result.error || "Não foi possível carregar as configurações de envio.");
+      setAutomaticSendingEnabled(Boolean(result.automaticSendingEnabled));
+      setPauseAll(Boolean(result.pauseAll));
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : "Não foi possível carregar as configurações de envio.");
+    }
+  }, []);
+
+  useEffect(() => { const timer = window.setTimeout(() => { void loadConnections(); void loadSettings(); }, 0); return () => window.clearTimeout(timer); }, [loadConnections, loadSettings]);
   useEffect(() => () => {
     if (channelHelpHoverTimer.current) window.clearTimeout(channelHelpHoverTimer.current);
   }, []);
@@ -112,7 +127,7 @@ export function WhatsAppConnections() {
     event.preventDefault(); setSaving(true);
     const data = new FormData(event.currentTarget);
     try {
-      const response = await fetch(editing ? `/api/whatsapp-connections/${editing.id}` : "/api/whatsapp-connections", { method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: data.get("name"), provider, endpointUrl: data.get("endpointUrl"), instanceName: data.get("instanceName"), apiToken: data.get("apiToken"), channelId: data.get("channelId"), active, attendants: [] }) });
+      const response = await fetch(editing ? `/api/whatsapp-connections/${editing.id}` : "/api/whatsapp-connections", { method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: data.get("name"), provider, endpointUrl: data.get("endpointUrl"), instanceName: data.get("instanceName"), apiToken: data.get("apiToken"), channelId: data.get("channelId"), active, dailyLimit: Number(data.get("dailyLimit")), attendants: [] }) });
       const result = await response.json() as { error?: string };
       if (!response.ok) throw new Error(result.error || "Não foi possível salvar a conexão.");
       setDialogOpen(false); toast.success(editing ? "Conexão atualizada" : "Conexão criada"); await loadConnections();
@@ -154,10 +169,31 @@ export function WhatsAppConnections() {
       const result = await response.json() as { error?: string; message?: string };
       if (!response.ok) throw new Error(result.error || "Não foi possível testar a conexão.");
       toast.success(result.message || "Conexão validada com sucesso.");
+      await loadConnections();
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : "Não foi possível testar a conexão.");
     } finally {
       setTestingId(null);
+    }
+  }
+
+  async function updateOutboundSetting(key: "automaticSendingEnabled" | "pauseAll", value: boolean) {
+    setSettingsSaving(true);
+    try {
+      const response = await fetch("/api/outbound/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [key]: value }),
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error || "Não foi possível salvar a configuração.");
+      if (key === "automaticSendingEnabled") setAutomaticSendingEnabled(value);
+      else setPauseAll(value);
+      toast.success(key === "pauseAll" ? (value ? "Todos os envios foram pausados." : "Fila liberada para novos envios.") : (value ? "Envio automático de cadências ativado." : "Cadências voltaram ao envio manual."));
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : "Não foi possível salvar a configuração.");
+    } finally {
+      setSettingsSaving(false);
     }
   }
 
@@ -171,6 +207,17 @@ export function WhatsAppConnections() {
         </div>
         <Button onClick={openCreate} className="bg-[#0b553f] hover:bg-[#074632]"><Plus className="mr-2 size-4" />Nova conexão</Button>
       </div>
+
+      <section className="mt-6 grid gap-3 rounded-2xl border border-[#dfe8e2] bg-white p-5 shadow-[0_10px_30px_rgba(18,60,47,.04)] sm:grid-cols-2">
+        <label className="flex items-center justify-between gap-4 rounded-xl bg-[#f3f7f4] p-4 text-sm font-semibold">
+          <span><span className="block">Envio automático de cadências</span><span className="mt-1 block text-xs font-normal text-[#71827a]">Desligado por padrão. Mensagens rápidas continuam exigindo confirmação.</span></span>
+          <Switch checked={automaticSendingEnabled} disabled={settingsSaving || pauseAll} onCheckedChange={(value) => void updateOutboundSetting("automaticSendingEnabled", value)} />
+        </label>
+        <label className="flex items-center justify-between gap-4 rounded-xl bg-[#fff3f1] p-4 text-sm font-semibold text-[#8b3028]">
+          <span><span className="block">Pausar todos os envios</span><span className="mt-1 block text-xs font-normal text-[#9b5c56]">Bloqueia cadências, mensagens rápidas e fallback manual.</span></span>
+          <Switch checked={pauseAll} disabled={settingsSaving} onCheckedChange={(value) => void updateOutboundSetting("pauseAll", value)} />
+        </label>
+      </section>
 
       <div className="mt-7 grid gap-5 xl:grid-cols-2">
         {loading && <div className="col-span-full grid place-items-center py-20"><LoaderCircle className="size-7 animate-spin text-[#0b553f]" /></div>}
@@ -200,6 +247,7 @@ export function WhatsAppConnections() {
             </div>
             {connection.provider === "zpro" && connection.endpointConfigured && <p className="mt-4 rounded-lg bg-[#f4f7f5] px-3 py-2 text-xs text-[#5f746a]">Backend configurado (oculto)</p>}
             {connection.provider !== "zpro" && connection.endpointUrl && <p className="mt-4 truncate rounded-lg bg-[#f4f7f5] px-3 py-2 text-xs text-[#5f746a]">{connection.endpointUrl}</p>}
+            {connection.provider === "zpro" && <div className={`mt-3 rounded-lg px-3 py-2 text-xs ${connection.healthStatus === "ready" ? "bg-emerald-50 text-emerald-700" : connection.healthStatus === "error" || connection.healthStatus === "unavailable" ? "bg-red-50 text-red-700" : "bg-slate-100 text-slate-600"}`}>Saúde: {connection.healthStatus === "ready" ? "disponível" : connection.healthStatus === "unavailable" ? "temporariamente indisponível" : connection.healthStatus === "error" ? "com erro" : "não testada"}{connection.healthError ? ` · ${connection.healthError}` : ""} · limite {connection.dailyLimit}/dia</div>}
             <div className="mt-5 border-t border-[#e9eeeb] pt-4">
               <div className="flex items-center justify-between">
                 <div>
@@ -316,6 +364,9 @@ export function WhatsAppConnections() {
                 <span className="font-normal text-[#71827a]">Informe somente o número inteiro e positivo, sem o caractere #.</span>
               </div>
             )}
+            <Field label="Limite diário de envios">
+              <Input name="dailyLimit" type="number" inputMode="numeric" min={1} max={10000} required defaultValue={editing?.dailyLimit ?? 30} />
+            </Field>
             <label className="flex items-center justify-between rounded-xl bg-[#f3f7f4] p-4 text-sm font-semibold sm:col-span-2">Conexão ativa<Switch checked={active} onCheckedChange={setActive} /></label>
             <div className="flex justify-end gap-2 sm:col-span-2">
               <Button type="button" variant="ghost" onClick={() => setDialogOpen(false)}>Cancelar</Button>

@@ -31,6 +31,7 @@ const connectionSchema = z
     apiToken: z.string().trim().max(2000).default(""),
     channelId: z.string().trim().max(20).default(""),
     active: z.boolean().default(true),
+    dailyLimit: z.number().int().min(1).max(10000).default(30),
     attendants: z.array(attendantSchema).max(30).default([]),
   })
   .superRefine((value, context) => {
@@ -88,7 +89,7 @@ export async function GET() {
   const { data: connections, error } = await supabase
     .from("whatsapp_connections")
     .select(
-      "id,owner_id,name,provider,endpoint_url,instance_name,channel_id,active,created_at",
+      "id,owner_id,name,provider,endpoint_url,instance_name,channel_id,active,daily_limit,health_status,health_error,created_at",
     )
     .order("created_at", { ascending: false });
   if (error) {
@@ -141,6 +142,9 @@ export async function GET() {
           ? item.channel_id
           : null,
       active: item.active,
+      dailyLimit: item.daily_limit,
+      healthStatus: item.health_status,
+      healthError: item.health_error,
       owner: item.owner_id === user.id,
       hasToken: tokenConnectionIds.has(item.id),
       attendants: (attendantsResult.data || [])
@@ -218,6 +222,7 @@ export async function POST(request: Request) {
       channel_id:
         parsed.data.provider === "zpro" ? Number(parsed.data.channelId) : null,
       active: parsed.data.active,
+      daily_limit: parsed.data.dailyLimit,
     })
     .select("id")
     .single();

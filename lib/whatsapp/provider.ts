@@ -53,6 +53,7 @@ export class WhatsAppProviderError extends Error {
     message: string,
     public readonly code = "PROVIDER_ERROR",
     public readonly status = 502,
+    public readonly retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = "WhatsAppProviderError";

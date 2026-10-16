@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { z } from "zod";
 
 import {
@@ -6,8 +6,14 @@ import {
   sendOutboundMessage,
   type SendOutboundMessageResult,
 } from "@/lib/outbound-messages";
+import {
+  advanceActiveSequence,
+  dispatchOutboundBatch,
+} from "@/lib/outbound-dispatcher";
 import { messageAttachmentsSchema } from "@/lib/message-attachment-validation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+
+export const maxDuration = 45;
 
 const messageSchema = z.object({
   messageId: z.string().uuid(),
@@ -31,6 +37,7 @@ export async function POST(request: Request) {
       contactId: parsed.data.contactId,
       body: parsed.data.body,
       messageId: parsed.data.messageId,
+      source: "single",
       forceManual: parsed.data.manual,
       attachments: parsed.data.attachments,
     });
@@ -41,20 +48,16 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Não foi possível registrar a atividade." }, { status: 500 });
   }
 
-  const { data: link } = result.replayed
-    ? { data: null }
-    : await supabase.from("contact_sequences").select("id,sequence_id,current_step").eq("contact_id", parsed.data.contactId).is("paused_at", null).is("completed_at", null).maybeSingle();
-  if (link) {
-    const { data: steps } = await supabase.from("sequence_steps").select("delay_days").eq("sequence_id", link.sequence_id).eq("enabled", true).order("position");
-    const nextIndex = link.current_step + 1;
-    const nextStep = steps?.[nextIndex];
-    if (nextStep) {
-      const nextRunAt = new Date(result.sentAt);
-      nextRunAt.setDate(nextRunAt.getDate() + nextStep.delay_days);
-      await supabase.from("contact_sequences").update({ current_step: nextIndex, next_run_at: nextRunAt.toISOString() }).eq("id", link.id);
-    } else {
-      await supabase.from("contact_sequences").update({ completed_at: new Date().toISOString(), next_run_at: null }).eq("id", link.id);
-    }
+  if (result.mode === "queue") {
+    after(async () => {
+      await dispatchOutboundBatch({ ownerId: user.id });
+    });
+  } else if (!result.deduplicated) {
+    await advanceActiveSequence(supabase, {
+      source: "single",
+      contactId: parsed.data.contactId,
+      ownerId: user.id,
+    });
   }
   return NextResponse.json({ ok: true, ...result });
 }
