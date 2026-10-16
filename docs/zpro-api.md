@@ -16,7 +16,7 @@ Fonte: coleção pública **Z-PRO v4.x.x.x** no Postman, consultada em 13/10/202
 
 - `body`: texto final da mensagem.
 - `number`: WhatsApp com DDI, somente dígitos, por exemplo `5511999999999`.
-- `externalKey`: chave da operação criada pelo sistema cliente. No M1 é o UUID da linha em `messages`. A documentação pede unicidade, mas não comprova se a API deduplica uma segunda chamada com a mesma chave.
+- `externalKey`: chave da operação criada pelo sistema cliente. No M1 é o UUID da linha em `messages`. Dois testes reais confirmaram deduplicação para chamadas repetidas com a mesma chave e o mesmo payload; o prazo de retenção da chave não foi testado.
 - `isClosed`: fecha o ticket depois do envio (`false` no Ninja Green).
 - `validateNumber`: opcional, padrão `true`; `false` mantém o número exatamente como enviado e é recomendado pela documentação apenas para WABA em casos de duplicação pelo nono dígito.
 
@@ -34,11 +34,11 @@ No M1, a fila envia apenas texto. Mensagens com anexos continuam no fluxo manual
 
 ## Resultado incerto e teste de chave repetida
 
-Antes de qualquer retry automático após uma chamada iniciada, é necessário enviar duas requisições com a mesma `externalKey` somente ao número de teste autorizado pelo proprietário e observar se a ZPRO rejeita, ignora ou duplica a mensagem.
+Em 16/10/2026, às 10:07 (America/Sao_Paulo), o proprietário confirmou o teste para o número terminado em **7376**. A primeira chamada, com `externalKey` `8797f410-3bdd-40b0-8d15-aaa9a5c8da57`, retornou HTTP **502**, erro `backend_offline`, sem `idFront`/`messageId` nem `ticketId`. A segunda chamada foi interrompida por segurança porque a primeira não confirmou aceitação.
 
-Em 16/10/2026, às 10:07 (America/Sao_Paulo), o proprietário confirmou o teste para o número terminado em **7376**. A primeira chamada, com `externalKey` `8797f410-3bdd-40b0-8d15-aaa9a5c8da57`, retornou HTTP **502**, erro `backend_offline`, sem `idFront`/`messageId` nem `ticketId`. A segunda chamada foi interrompida por segurança porque a primeira não confirmou aceitação. Portanto, **a deduplicação da ZPRO segue não verificada**: ainda não sabemos se uma repetição seria rejeitada, ignorada ou entregue duas vezes. Não houve retry automático dessa chamada.
+Em seguida, dois pares de chamadas reais, cada par com o mesmo payload e a mesma `externalKey`, foram feitos para esse número. As chaves foram `97b8ff4c-ce1f-4155-8002-848153e78a0f` e `d5ace5e8-874c-4163-8b19-f71e0f1e62b5`. **Todas as quatro respostas foram HTTP 200, `success: true`, sem identificador de mensagem ou ticket; o proprietário confirmou uma mensagem recebida por par, duas no total.** Nesse cenário, a ZPRO deduplicou por `externalKey` e respondeu da mesma forma à primeira e à segunda chamada. Não foi testado por quanto tempo a ZPRO retém a chave, nem o comportamento de uma repetição após timeout ou erro 5xx.
 
-Até essa verificação, timeout, erro 5xx, resposta inválida ou lease expirado após `request_started_at` deixam a mensagem como **Envio incerto**. Não há retry automático nesses casos. O usuário pode conferir o WhatsApp e então marcar como enviada ou solicitar novo envio, que cria outro UUID e outra `externalKey`. Falhas 4xx que demonstram rejeição anterior ao envio ficam como falhas definitivas.
+A regra planejada de retry para resultados ambíguos está em `docs/outbound-plan.md`. Até sua implementação, o M1 mantém esses resultados como **Envio incerto**, sem retry automático. Falhas 4xx que demonstram rejeição anterior ao envio ficam como falhas definitivas.
 
 ## Testar conexão/status
 
