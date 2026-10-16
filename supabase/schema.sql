@@ -48,6 +48,7 @@ create table if not exists public.contacts (
   origin text not null default 'Cadastro manual',
   status text not null default 'Novo',
   note text,
+  do_not_contact boolean not null default false,
   consent_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -117,6 +118,7 @@ create table if not exists public.contact_sequences (
   current_step integer not null default 0,
   next_run_at timestamptz,
   paused_at timestamptz,
+  pause_reason text,
   completed_at timestamptz,
   created_at timestamptz not null default now(),
   unique(contact_id, sequence_id)
@@ -136,6 +138,22 @@ create table if not exists public.messages (
   direction text not null default 'outbound' check (direction in ('inbound', 'outbound')),
   body text not null,
   status text not null default 'queued',
+  queue_status text check (queue_status is null or queue_status in ('pending', 'sending', 'sent', 'failed', 'unknown', 'canceled')),
+  source text check (source is null or source in ('single', 'quick', 'sequence', 'legacy')),
+  connection_id uuid,
+  priority smallint not null default 100 check (priority between 0 and 1000),
+  scheduled_at timestamptz,
+  confirmed_at timestamptz,
+  attempt_count integer not null default 0 check (attempt_count >= 0),
+  next_attempt_at timestamptz,
+  last_attempt_at timestamptz,
+  request_started_at timestamptz,
+  claimed_at timestamptz,
+  claim_token uuid,
+  claim_expires_at timestamptz,
+  canceled_at timestamptz,
+  cancel_reason text,
+  uncertainty_reason text,
   sent_at timestamptz,
   created_at timestamptz not null default now()
 );
@@ -161,6 +179,21 @@ create table if not exists public.whatsapp_connections (
   channel_number text constraint whatsapp_connections_channel_number_check check (channel_number is null or channel_number ~ '^55[0-9]{10,11}$'), -- legado: não usar para identificar canais ZPRO
   channel_id bigint constraint whatsapp_connections_channel_id_check check (channel_id is null or channel_id > 0),
   active boolean not null default true,
+  daily_limit integer not null default 30 check (daily_limit between 1 and 10000),
+  health_status text not null default 'unknown' check (health_status in ('unknown', 'ready', 'error')),
+  health_error text,
+  health_checked_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.outbound_settings (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  automatic_sending_enabled boolean not null default false,
+  pause_all boolean not null default false,
+  timezone text not null default 'America/Sao_Paulo',
+  per_connection_batch_limit integer not null default 3 check (per_connection_batch_limit between 1 and 50),
+  last_used_connection_id uuid references public.whatsapp_connections(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -182,6 +215,15 @@ create table if not exists public.whatsapp_connection_attendants (
   created_at timestamptz not null default now(),
   unique(connection_id, email)
 );
+
+create unique index if not exists contacts_id_owner_unique_idx on public.contacts(id, owner_id);
+create unique index if not exists whatsapp_connections_id_owner_unique_idx on public.whatsapp_connections(id, owner_id);
+
+alter table public.messages
+  drop constraint if exists messages_contact_owner_fk,
+  add constraint messages_contact_owner_fk foreign key (contact_id, owner_id) references public.contacts(id, owner_id) on delete cascade,
+  drop constraint if exists messages_connection_owner_fk,
+  add constraint messages_connection_owner_fk foreign key (connection_id, owner_id) references public.whatsapp_connections(id, owner_id) on delete restrict;
 
 create or replace function public.can_access_whatsapp_connection(target_id uuid)
 returns boolean language sql stable security definer set search_path = public as $$
@@ -217,6 +259,7 @@ alter table public.quick_messages enable row level security;
 alter table public.whatsapp_connections enable row level security;
 alter table public.whatsapp_connection_secrets enable row level security;
 alter table public.whatsapp_connection_attendants enable row level security;
+alter table public.outbound_settings enable row level security;
 
 revoke all on table public.whatsapp_connection_secrets from anon, authenticated;
 
@@ -238,6 +281,7 @@ create policy "whatsapp_connections_update" on public.whatsapp_connections for u
 create policy "whatsapp_connections_delete" on public.whatsapp_connections for delete using (owner_id = auth.uid());
 create policy "whatsapp_attendants_read" on public.whatsapp_connection_attendants for select using (public.can_access_whatsapp_connection(connection_id));
 create policy "whatsapp_attendants_manage" on public.whatsapp_connection_attendants for all using (exists(select 1 from public.whatsapp_connections where id = connection_id and owner_id = auth.uid())) with check (exists(select 1 from public.whatsapp_connections where id = connection_id and owner_id = auth.uid()));
+create policy "outbound_settings_owner_all" on public.outbound_settings for all using (user_id = auth.uid()) with check (user_id = auth.uid() and (last_used_connection_id is null or exists(select 1 from public.whatsapp_connections where id = last_used_connection_id and owner_id = auth.uid())));
 
 insert into storage.buckets(id, name, public, file_size_limit, allowed_mime_types)
 values ('message-attachments', 'message-attachments', false, 52428800, array['image/*', 'video/*', 'application/pdf'])
@@ -473,6 +517,79 @@ begin
 end;
 $$;
 
+create or replace function public.claim_outbound_messages(
+  target_dispatcher_id uuid,
+  target_batch_size integer default 3,
+  target_per_connection_limit integer default 3,
+  target_lease_seconds integer default 75,
+  target_owner_id uuid default null
+) returns setof public.messages
+language plpgsql security definer set search_path = public as $$
+begin
+  if target_batch_size < 1 or target_batch_size > 50
+    or target_per_connection_limit < 1 or target_per_connection_limit > 50
+    or target_lease_seconds < 60 or target_lease_seconds > 600 then
+    raise exception 'Parâmetros inválidos para o despachante.' using errcode = '22023';
+  end if;
+
+  update public.messages
+  set queue_status = 'unknown', status = 'failed', provider_error_code = 'DELIVERY_LEASE_EXPIRED',
+    provider_error_message = 'A execução terminou sem confirmar o resultado do provedor.',
+    uncertainty_reason = 'lease_expired_after_request_started', claim_token = null, claim_expires_at = null
+  where queue_status = 'sending' and claim_expires_at < now() and request_started_at is not null
+    and (target_owner_id is null or owner_id = target_owner_id);
+
+  update public.messages
+  set queue_status = 'pending', status = 'queued', claimed_at = null, claim_token = null, claim_expires_at = null
+  where queue_status = 'sending' and claim_expires_at < now() and request_started_at is null
+    and (target_owner_id is null or owner_id = target_owner_id);
+
+  return query
+  with ranked as materialized (
+    select message_row.id,
+      row_number() over (partition by message_row.connection_id order by message_row.priority desc, message_row.scheduled_at, message_row.created_at, message_row.id) as connection_rank
+    from public.messages as message_row
+    join public.contacts as contact_row on contact_row.id = message_row.contact_id and contact_row.owner_id = message_row.owner_id
+    join public.whatsapp_connections as connection_row on connection_row.id = message_row.connection_id and connection_row.owner_id = message_row.owner_id
+    left join public.outbound_settings as settings_row on settings_row.user_id = message_row.owner_id
+    where message_row.queue_status = 'pending'
+      and message_row.scheduled_at <= now()
+      and coalesce(message_row.next_attempt_at, message_row.scheduled_at) <= now()
+      and message_row.confirmed_at is not null
+      and not contact_row.do_not_contact
+      and connection_row.active
+      and connection_row.health_status <> 'error'
+      and not coalesce(settings_row.pause_all, false)
+      and (message_row.source <> 'sequence' or coalesce(settings_row.automatic_sending_enabled, false))
+      and (target_owner_id is null or message_row.owner_id = target_owner_id)
+      and (
+        select count(*) from public.messages as sent_row
+        where sent_row.connection_id = connection_row.id and sent_row.queue_status = 'sent'
+          and (sent_row.sent_at at time zone coalesce(settings_row.timezone, 'America/Sao_Paulo'))::date
+            = (now() at time zone coalesce(settings_row.timezone, 'America/Sao_Paulo'))::date
+      ) < connection_row.daily_limit
+  ), candidates as (
+    select message_row.id
+    from public.messages as message_row join ranked on ranked.id = message_row.id
+    where ranked.connection_rank <= target_per_connection_limit
+    order by message_row.priority desc, message_row.scheduled_at, message_row.created_at, message_row.id
+    for update of message_row skip locked
+    limit target_batch_size
+  ), claimed as (
+    update public.messages as message_row
+    set queue_status = 'sending', status = 'sending', attempt_count = message_row.attempt_count + 1,
+      last_attempt_at = now(), claimed_at = now(), claim_token = target_dispatcher_id,
+      claim_expires_at = now() + make_interval(secs => target_lease_seconds), request_started_at = null,
+      provider_error_code = null, provider_error_message = null, uncertainty_reason = null
+    from candidates where message_row.id = candidates.id returning message_row.*
+  )
+  select * from claimed;
+end;
+$$;
+
+revoke all on function public.claim_outbound_messages(uuid, integer, integer, integer, uuid) from public;
+grant execute on function public.claim_outbound_messages(uuid, integer, integer, integer, uuid) to service_role;
+
 revoke all on function public.resolve_contact_audience(text, uuid[], uuid[]) from public;
 grant execute on function public.resolve_contact_audience(text, uuid[], uuid[]) to authenticated;
 revoke all on function public.configure_sequence_audience(uuid, text, uuid[], uuid[], boolean) from public;
@@ -490,6 +607,9 @@ create index if not exists sequence_contact_targets_user_sequence_idx on public.
 create unique index if not exists contact_sequences_one_active_idx on public.contact_sequences(contact_id) where paused_at is null and completed_at is null;
 create index if not exists contact_sequences_next_run_idx on public.contact_sequences(next_run_at) where paused_at is null and completed_at is null;
 create index if not exists messages_contact_created_idx on public.messages(contact_id, created_at desc);
+create index if not exists messages_dispatch_idx on public.messages(queue_status, scheduled_at, priority desc) where queue_status = 'pending';
+create index if not exists messages_connection_sent_idx on public.messages(connection_id, sent_at) where queue_status = 'sent';
+create index if not exists messages_owner_queue_idx on public.messages(owner_id, queue_status, created_at desc);
 create index if not exists quick_messages_user_updated_idx on public.quick_messages(user_id, updated_at desc);
 create index if not exists whatsapp_connections_owner_idx on public.whatsapp_connections(owner_id);
 create index if not exists whatsapp_attendants_user_idx on public.whatsapp_connection_attendants(user_id);

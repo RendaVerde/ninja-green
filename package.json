@@ -11,6 +11,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "test:outbound": "node --experimental-strip-types --experimental-test-isolation=none --test tests/outbound-dispatcher.test.mjs",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

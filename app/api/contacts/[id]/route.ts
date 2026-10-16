@@ -11,6 +11,7 @@ const updateSchema = z.object({
   interest: z.string().trim().min(2).max(180).optional(),
   origin: z.string().trim().min(2).max(120).optional(),
   note: z.string().trim().max(1000).optional(),
+  doNotContact: z.boolean().optional(),
 });
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -20,7 +21,13 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const parsed = updateSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "Alteração inválida." }, { status: 400 });
   const { id } = await context.params;
-  const payload = { ...parsed.data, email: parsed.data.email === "" ? null : parsed.data.email, updated_at: new Date().toISOString() };
+  const { doNotContact, ...contactFields } = parsed.data;
+  const payload = {
+    ...contactFields,
+    ...(doNotContact !== undefined ? { do_not_contact: doNotContact } : {}),
+    email: parsed.data.email === "" ? null : parsed.data.email,
+    updated_at: new Date().toISOString(),
+  };
   const { error } = await supabase.from("contacts").update(payload).eq("id", id).eq("owner_id", user.id);
   if (error) return NextResponse.json({ error: "Não foi possível atualizar o contato." }, { status: 500 });
   return NextResponse.json({ ok: true });

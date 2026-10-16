@@ -10,12 +10,6 @@ import {
 } from "@/lib/message-attachments";
 import { normalizeWhatsAppPhone } from "@/lib/whatsapp";
 import { ManualWhatsAppProvider } from "@/lib/whatsapp/manual";
-import type {
-  WhatsAppProvider,
-  WhatsAppSendResult,
-} from "@/lib/whatsapp/provider";
-import { WhatsAppProviderError } from "@/lib/whatsapp/provider";
-import { resolveWhatsAppProvider } from "@/lib/whatsapp/resolve-provider";
 
 export class OutboundMessageError extends Error {
   constructor(
@@ -34,28 +28,30 @@ type SendOutboundMessageInput = {
   contactId: string;
   body: string;
   messageId: string;
+  source: "single" | "quick";
   forceManual?: boolean;
+  connectionId?: string;
   attachments?: MessageAttachment[];
 };
 
 export type SendOutboundMessageResult = {
   messageId: string;
-  sentAt: string;
-  mode: "provider" | "manual";
-  provider: string;
-  status: "sent" | "opened";
+  createdAt: string;
+  mode: "queue" | "manual";
+  provider: "zpro" | "manual";
+  status: "pending" | "opened";
   whatsappUrl: string | null;
   deduplicated: boolean;
-  replayed: boolean;
 };
 
-type MessageRow = {
+type ExistingMessage = {
   id: string;
   contact_id: string;
   body: string;
   provider: string | null;
   status: string;
-  sent_at: string | null;
+  queue_status: string | null;
+  created_at: string;
 };
 
 async function loadExistingMessage(
@@ -65,7 +61,7 @@ async function loadExistingMessage(
 ) {
   const { data, error } = await supabase
     .from("messages")
-    .select("id,contact_id,body,provider,status,sent_at")
+    .select("id,contact_id,body,provider,status,queue_status,created_at")
     .eq("id", messageId)
     .eq("owner_id", userId)
     .maybeSingle();
@@ -75,275 +71,319 @@ async function loadExistingMessage(
       500,
     );
   }
-  return data as MessageRow | null;
+  return data as ExistingMessage | null;
 }
 
-async function reserveMessage(
-  input: SendOutboundMessageInput,
-  contactId: string,
-) {
-  const { supabase, userId, body, messageId } = input;
-  const { error } = await supabase.from("messages").insert({
-    id: messageId,
-    owner_id: userId,
-    contact_id: contactId,
-    channel: "whatsapp",
-    direction: "outbound",
-    body,
-    status: "sending",
-  });
-
-  if (!error) return { deduplicated: false, completed: null };
-  if (error.code !== "23505") {
+async function resolveSettings(supabase: SupabaseClient, userId: string) {
+  const { data, error } = await supabase
+    .from("outbound_settings")
+    .select("pause_all,last_used_connection_id")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) {
     throw new OutboundMessageError(
-      "Não foi possível preparar o histórico do envio.",
+      "Não foi possível consultar as configurações de envio.",
       500,
     );
   }
-
-  const existing = await loadExistingMessage(supabase, userId, messageId);
-  if (!existing || existing.contact_id !== contactId || existing.body !== body) {
-    throw new OutboundMessageError(
-      "A identificação deste envio já está sendo usada.",
-      409,
-      "MESSAGE_ID_CONFLICT",
-    );
-  }
-  if (existing.status === "sent" || existing.status === "opened") {
-    return { deduplicated: true, completed: existing };
-  }
-  if (existing.status === "sending") {
-    throw new OutboundMessageError(
-      "Este envio já está em andamento.",
-      409,
-      "MESSAGE_IN_PROGRESS",
-    );
-  }
-
-  const { data: claimed, error: claimError } = await supabase
-    .from("messages")
-    .update({
-      status: "sending",
-      provider_error_code: null,
-      provider_error_message: null,
-    })
-    .eq("id", messageId)
-    .eq("owner_id", userId)
-    .eq("status", "failed")
-    .select("id")
-    .maybeSingle();
-  if (claimError || !claimed) {
-    throw new OutboundMessageError(
-      "Não foi possível retomar este envio.",
-      409,
-      "MESSAGE_RETRY_CONFLICT",
-    );
-  }
-  return { deduplicated: true, completed: null };
+  return {
+    pauseAll: data?.pause_all ?? false,
+    lastUsedConnectionId: data?.last_used_connection_id as
+      | string
+      | null
+      | undefined,
+  };
 }
 
-async function markFailure(
+async function resolveConnection(
   supabase: SupabaseClient,
   userId: string,
-  messageId: string,
-  providerName: string,
-  error: unknown,
-): Promise<never> {
-  const code =
-    error instanceof WhatsAppProviderError
-      ? error.code
-      : "WHATSAPP_SEND_ERROR";
-  const message =
-    error instanceof Error ? error.message : "Não foi possível enviar a mensagem.";
-  await supabase
-    .from("messages")
-    .update({
-      provider: providerName,
-      status: "failed",
-      provider_error_code: code,
-      provider_error_message: message,
-    })
-    .eq("id", messageId)
-    .eq("owner_id", userId);
-  throw new OutboundMessageError(
-    message,
-    error instanceof WhatsAppProviderError ? error.status : 502,
-    code,
+  requestedConnectionId?: string,
+  lastUsedConnectionId?: string | null,
+) {
+  const { data, error } = await supabase
+    .from("whatsapp_connections")
+    .select("id,health_status")
+    .eq("owner_id", userId)
+    .eq("provider", "zpro")
+    .eq("active", true)
+    .order("created_at", { ascending: false });
+  if (error) {
+    throw new OutboundMessageError(
+      "Não foi possível consultar as conexões WhatsApp.",
+      500,
+    );
+  }
+  const connections = data || [];
+  if (!connections.length) {
+    if (requestedConnectionId) {
+      throw new OutboundMessageError(
+        "A conexão selecionada está inativa ou não pertence à sua conta.",
+        400,
+        "INVALID_CONNECTION",
+      );
+    }
+    return null;
+  }
+  if (requestedConnectionId) {
+    const requested = connections.find(
+      (item) => item.id === requestedConnectionId,
+    );
+    if (!requested) {
+      throw new OutboundMessageError(
+        "A conexão selecionada está inativa ou não pertence à sua conta.",
+        400,
+        "INVALID_CONNECTION",
+      );
+    }
+    return requested;
+  }
+  if (connections.length === 1) return connections[0];
+  const lastUsed = connections.find(
+    (item) => item.id === lastUsedConnectionId,
   );
+  if (lastUsed) return lastUsed;
+  if (connections.length > 1) {
+    throw new OutboundMessageError(
+      "Escolha qual conexão WhatsApp deve realizar o envio.",
+      409,
+      "CONNECTION_REQUIRED",
+    );
+  }
+  return null;
+}
+
+async function recordManualFallback(
+  input: SendOutboundMessageInput,
+  phone: string,
+  body: string,
+  attachments: MessageAttachment[],
+  existing: ExistingMessage | null,
+): Promise<SendOutboundMessageResult> {
+  const signedAttachments = await signMessageAttachments(
+    input.supabase,
+    input.userId,
+    attachments,
+  );
+  const manualBody = appendAttachmentLinks(input.body, signedAttachments);
+  const manualProvider = new ManualWhatsAppProvider();
+  const manualResult = await manualProvider.sendText({
+    body: manualBody,
+    number: phone,
+    externalKey: input.messageId,
+  });
+  const now = new Date().toISOString();
+  if (!existing) {
+    const { error } = await input.supabase.from("messages").insert({
+      id: input.messageId,
+      owner_id: input.userId,
+      contact_id: input.contactId,
+      channel: "whatsapp",
+      provider: "manual",
+      direction: "outbound",
+      body,
+      status: "opened",
+      queue_status: "canceled",
+      source: input.source,
+      priority: 300,
+      scheduled_at: now,
+      confirmed_at: now,
+      canceled_at: now,
+      cancel_reason: "manual_fallback_opened",
+      sent_at: now,
+    });
+    if (error) {
+      throw new OutboundMessageError(
+        "Não foi possível registrar o envio manual.",
+        500,
+      );
+    }
+    await input.supabase
+      .from("contacts")
+      .update({ status: "Em contato", updated_at: now })
+      .eq("id", input.contactId)
+      .eq("owner_id", input.userId)
+      .eq("status", "Novo");
+  }
+  return {
+    messageId: input.messageId,
+    createdAt: existing?.created_at || now,
+    mode: "manual",
+    provider: "manual",
+    status: "opened",
+    whatsappUrl: manualResult.whatsappUrl || null,
+    deduplicated: Boolean(existing),
+  };
 }
 
 export async function sendOutboundMessage(
   input: SendOutboundMessageInput,
 ): Promise<SendOutboundMessageResult> {
-  const {
-    supabase,
-    userId,
-    contactId,
-    body,
-    messageId,
-    attachments = [],
-  } = input;
-  const { data: contact, error: contactError } = await supabase
-    .from("contacts")
-    .select("id,phone")
-    .eq("id", contactId)
-    .eq("owner_id", userId)
-    .maybeSingle();
+  const attachments = input.attachments || [];
+  const storedBody = appendAttachmentSummary(input.body, attachments);
+  const existing = await loadExistingMessage(
+    input.supabase,
+    input.userId,
+    input.messageId,
+  );
+  if (existing) {
+    if (
+      existing.contact_id !== input.contactId ||
+      existing.body !== storedBody
+    ) {
+      throw new OutboundMessageError(
+        "A identificação deste envio já está sendo usada.",
+        409,
+        "MESSAGE_ID_CONFLICT",
+      );
+    }
+    if (
+      existing.queue_status === "pending" ||
+      existing.queue_status === "sending" ||
+      existing.queue_status === "sent"
+    ) {
+      return {
+        messageId: existing.id,
+        createdAt: existing.created_at,
+        mode: "queue",
+        provider: "zpro",
+        status: "pending",
+        whatsappUrl: null,
+        deduplicated: true,
+      };
+    }
+    if (existing.status === "opened" && existing.provider === "manual") {
+      return {
+        messageId: existing.id,
+        createdAt: existing.created_at,
+        mode: "manual",
+        provider: "manual",
+        status: "opened",
+        whatsappUrl: null,
+        deduplicated: true,
+      };
+    }
+    throw new OutboundMessageError(
+      "Esta tentativa já foi registrada. Inicie um novo envio pelo histórico.",
+      409,
+      "MESSAGE_ID_CONFLICT",
+    );
+  }
 
+  const [{ data: contact, error: contactError }, settings] = await Promise.all([
+    input.supabase
+      .from("contacts")
+      .select("id,phone,do_not_contact")
+      .eq("id", input.contactId)
+      .eq("owner_id", input.userId)
+      .maybeSingle(),
+    resolveSettings(input.supabase, input.userId),
+  ]);
   if (contactError) {
     throw new OutboundMessageError("Não foi possível localizar o contato.", 500);
   }
-  if (!contact) throw new OutboundMessageError("Contato não encontrado.", 404);
-
-  const number = normalizeWhatsAppPhone(contact.phone);
-  if (!number) {
+  if (!contact) {
+    throw new OutboundMessageError("Contato não encontrado.", 404);
+  }
+  if (contact.do_not_contact) {
+    throw new OutboundMessageError(
+      "Este contato está marcado como não contatar.",
+      409,
+      "DO_NOT_CONTACT",
+    );
+  }
+  if (settings.pauseAll) {
+    throw new OutboundMessageError(
+      "Todos os envios estão pausados.",
+      409,
+      "OUTBOUND_PAUSED",
+    );
+  }
+  const phone = normalizeWhatsAppPhone(contact.phone);
+  if (!phone) {
     throw new OutboundMessageError(
       "O contato não possui um WhatsApp válido.",
       400,
     );
   }
 
-  const reservation = await reserveMessage(
-    { ...input, body: appendAttachmentSummary(body, attachments) },
-    contact.id,
-  );
-  if (reservation.completed) {
-    const isManual = reservation.completed.status === "opened";
-    let whatsappUrl: string | null = null;
-    if (isManual) {
-      const manualProvider = new ManualWhatsAppProvider();
-      const signedAttachments = await signMessageAttachments(
-        supabase,
-        userId,
-        attachments,
-      );
-      const manualResult = await manualProvider.sendText({
-        body: appendAttachmentLinks(body, signedAttachments),
-        number,
-        externalKey: messageId,
-      });
-      whatsappUrl = manualResult.whatsappUrl || null;
-    }
-    return {
-      messageId,
-      sentAt: reservation.completed.sent_at || new Date().toISOString(),
-      mode: isManual ? "manual" : "provider",
-      provider: reservation.completed.provider || "manual",
-      status: reservation.completed.status as "sent" | "opened",
-      whatsappUrl,
-      deduplicated: true,
-      replayed: true,
-    };
-  }
-
-  let provider: WhatsAppProvider;
-  try {
-    provider = input.forceManual
-      ? new ManualWhatsAppProvider()
-      : await resolveWhatsAppProvider(supabase);
-  } catch (error) {
-    return await markFailure(supabase, userId, messageId, "zpro", error);
-  }
-
-  try {
-    const signedAttachments = await signMessageAttachments(
-      supabase,
-      userId,
+  if (input.forceManual || attachments.length > 0) {
+    return recordManualFallback(
+      input,
+      phone,
+      storedBody,
       attachments,
-    );
-    let result: WhatsAppSendResult | undefined;
-    if (provider.name === "manual") {
-      result = await provider.sendText({
-        body: appendAttachmentLinks(body, signedAttachments),
-        number,
-        externalKey: messageId,
-        isClosed: false,
-        validateNumber: true,
-      });
-    } else if (signedAttachments.length > 0) {
-      for (const [index, attachment] of signedAttachments.entries()) {
-        const mediaResult = await provider.sendMedia({
-          body: index === 0 ? body : "",
-          number,
-          externalKey:
-            index === 0 ? messageId : `${messageId}-media-${index + 1}`,
-          isClosed: false,
-          validateNumber: true,
-          mediaUrl: attachment.url,
-          mimeType: attachment.mimeType,
-          fileName: attachment.name,
-        });
-        result ??= mediaResult;
-      }
-    } else {
-      result = await provider.sendText({
-        body,
-        number,
-        externalKey: messageId,
-        isClosed: false,
-        validateNumber: true,
-      });
-    }
-    if (!result) {
-      throw new OutboundMessageError(
-        "Nenhuma mensagem foi processada.",
-        500,
-        "EMPTY_DELIVERY_RESULT",
-      );
-    }
-    const sentAt = new Date().toISOString();
-    const status = result.mode === "manual" ? "opened" : "sent";
-    const { error: updateError } = await supabase
-      .from("messages")
-      .update({
-        provider: result.provider,
-        provider_message_id: result.providerMessageId || null,
-        provider_ticket_id: result.ticketId || null,
-        provider_error_code: null,
-        provider_error_message: null,
-        status,
-        sent_at: sentAt,
-      })
-      .eq("id", messageId)
-      .eq("owner_id", userId);
-    if (updateError) {
-      throw new OutboundMessageError(
-        "A mensagem foi processada, mas o histórico não pôde ser atualizado.",
-        500,
-        "MESSAGE_HISTORY_UPDATE_FAILED",
-      );
-    }
-
-    await supabase
-      .from("contacts")
-      .update({ status: "Em contato", updated_at: sentAt })
-      .eq("id", contact.id)
-      .eq("owner_id", userId)
-      .eq("status", "Novo");
-
-    return {
-      messageId,
-      sentAt,
-      mode: result.mode,
-      provider: result.provider,
-      status,
-      whatsappUrl: result.whatsappUrl || null,
-      deduplicated: reservation.deduplicated,
-      replayed: false,
-    };
-  } catch (error) {
-    if (
-      error instanceof OutboundMessageError &&
-      error.code === "MESSAGE_HISTORY_UPDATE_FAILED"
-    ) {
-      throw error;
-    }
-    return await markFailure(
-      supabase,
-      userId,
-      messageId,
-      provider.name,
-      error,
+      existing,
     );
   }
+
+  const connection = await resolveConnection(
+    input.supabase,
+    input.userId,
+    input.connectionId,
+    settings.lastUsedConnectionId,
+  );
+  if (!connection) {
+    return recordManualFallback(
+      input,
+      phone,
+      storedBody,
+      attachments,
+      existing,
+    );
+  }
+  if (connection.health_status === "error") {
+    throw new OutboundMessageError(
+      "A conexão selecionada está com erro. Teste ou corrija a conexão antes de enviar.",
+      409,
+      "CONNECTION_ERROR",
+    );
+  }
+
+  const now = new Date().toISOString();
+  const { error } = await input.supabase.from("messages").insert({
+    id: input.messageId,
+    owner_id: input.userId,
+    contact_id: input.contactId,
+    channel: "whatsapp",
+    direction: "outbound",
+    body: storedBody,
+    status: "queued",
+    queue_status: "pending",
+    source: input.source,
+    connection_id: connection.id,
+    priority: 300,
+    scheduled_at: now,
+    confirmed_at: now,
+  });
+  if (error) {
+    if (error.code === "23505") {
+      throw new OutboundMessageError(
+        "Este envio já foi solicitado.",
+        409,
+        "MESSAGE_ID_CONFLICT",
+      );
+    }
+    throw new OutboundMessageError(
+      "Não foi possível adicionar a mensagem à fila.",
+      500,
+    );
+  }
+  await input.supabase.from("outbound_settings").upsert(
+    {
+      user_id: input.userId,
+      last_used_connection_id: connection.id,
+      updated_at: now,
+    },
+    { onConflict: "user_id" },
+  );
+  return {
+    messageId: input.messageId,
+    createdAt: now,
+    mode: "queue",
+    provider: "zpro",
+    status: "pending",
+    whatsappUrl: null,
+    deduplicated: false,
+  };
 }

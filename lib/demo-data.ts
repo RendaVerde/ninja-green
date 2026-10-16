@@ -23,13 +23,20 @@ export type Lead = {
   nextContact: string;
   lastContact: string;
   note?: string;
+  doNotContact?: boolean;
   tagIds?: string[];
   sequenceId?: string | null;
   currentStep?: number | null;
   nextRunAt?: string | null;
   lastContactAt?: string | null;
   createdAt?: string;
-  history?: { id: string; title: string; detail: string; time: string }[];
+  history?: {
+    id: string;
+    title: string;
+    detail: string;
+    time: string;
+    queueStatus?: "pending" | "sending" | "sent" | "failed" | "unknown" | "canceled" | null;
+  }[];
 };
 
 export type SequenceStep = {

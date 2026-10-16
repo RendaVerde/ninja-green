@@ -406,6 +406,7 @@ export function NinjaGreenApp({
           filter === "Todos" ||
           lead.kind === filter ||
           (filter === "Pendentes" &&
+            !lead.doNotContact &&
             currentTime !== null &&
             Boolean(lead.nextRunAt) &&
             new Date(lead.nextRunAt!).getTime() <= currentTime) ||
@@ -426,6 +427,7 @@ export function NinjaGreenApp({
       const result: AppNotification[] = [];
       if (
         currentTime !== null &&
+        !lead.doNotContact &&
         lead.nextRunAt &&
         new Date(lead.nextRunAt).getTime() <= currentTime
       )
@@ -451,6 +453,22 @@ export function NinjaGreenApp({
           detail: `${lead.name} ainda não recebeu uma abordagem.`,
           leadId: lead.id,
         });
+      if (lead.history?.some((item) => item.queueStatus === "unknown"))
+        result.push({
+          id: `unknown-${lead.id}`,
+          title: `Envio incerto para ${lead.name}`,
+          detail: "Confirme se recebeu antes de reenviar.",
+          leadId: lead.id,
+          urgent: true,
+        });
+      else if (lead.history?.some((item) => item.queueStatus === "failed"))
+        result.push({
+          id: `failed-${lead.id}`,
+          title: `Falha no envio para ${lead.name}`,
+          detail: "Abra o histórico para consultar o motivo.",
+          leadId: lead.id,
+          urgent: true,
+        });
       return result;
     });
     if (!leads.length && !dataLoading)
@@ -475,9 +493,10 @@ export function NinjaGreenApp({
       "Olá, {{nome}}! Tudo bem? Gostaria de conversar sobre {{interesse}}.";
     const body = renderMessageTemplate(template, lead).text;
     const attachments = activeStep?.attachments || [];
-    const connectionsResponse = await fetch("/api/whatsapp-connections", {
-      cache: "no-store",
-    });
+    const [connectionsResponse, settingsResponse] = await Promise.all([
+      fetch("/api/whatsapp-connections", { cache: "no-store" }),
+      fetch("/api/outbound/settings", { cache: "no-store" }),
+    ]);
     const connectionsPayload = (await connectionsResponse
       .json()
       .catch(() => ({}))) as {
@@ -490,7 +509,21 @@ export function NinjaGreenApp({
           "Não foi possível verificar o modo de envio.",
       );
     }
-    const deliveryMode = connectionsPayload.connections?.some(
+    const settingsPayload = (await settingsResponse.json().catch(() => ({}))) as {
+      error?: string;
+      automaticSendingEnabled?: boolean;
+      pauseAll?: boolean;
+    };
+    if (!settingsResponse.ok) {
+      return toast.error(
+        settingsPayload.error || "Não foi possível verificar as configurações de envio.",
+      );
+    }
+    if (settingsPayload.pauseAll) {
+      return toast.error("Todos os envios estão pausados.");
+    }
+    const cadenceManual = Boolean(lead.sequenceId) && !settingsPayload.automaticSendingEnabled;
+    const deliveryMode = !cadenceManual && connectionsPayload.connections?.some(
       (connection) => connection.provider === "zpro" && connection.active,
     )
       ? "provider"
@@ -817,6 +850,30 @@ export function NinjaGreenApp({
     toast.success("Status atualizado");
   }
 
+  async function updateDoNotContact(lead: Lead, doNotContact: boolean) {
+    const response = await fetch(`/api/contacts/${lead.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ doNotContact }),
+    });
+    const payload = (await response.json().catch(() => ({}))) as MutationPayload;
+    if (!response.ok) {
+      return toast.error(
+        payload.error || "Não foi possível atualizar a preferência de contato.",
+      );
+    }
+    const updated = { ...lead, doNotContact };
+    setSelected(updated);
+    setLeads((items) =>
+      items.map((item) => (item.id === lead.id ? updated : item)),
+    );
+    toast.success(
+      doNotContact
+        ? "Contato bloqueado para novos envios."
+        : "Contato liberado para novos envios.",
+    );
+  }
+
   async function deleteLead(lead: Lead) {
     if (
       !window.confirm(
@@ -836,6 +893,30 @@ export function NinjaGreenApp({
       );
     setSelected(null);
     toast.success("Contato excluído");
+    await loadData();
+  }
+
+  async function resolveUnknownMessage(
+    messageId: string,
+    action: "resend" | "mark_sent",
+  ) {
+    const response = await fetch(`/api/messages/${messageId}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    const payload = (await response.json().catch(() => ({}))) as MutationPayload;
+    if (!response.ok) {
+      return toast.error(
+        payload.error || "Não foi possível resolver o envio incerto.",
+      );
+    }
+    toast.success(
+      action === "resend"
+        ? "Uma nova tentativa foi adicionada à fila."
+        : "Mensagem marcada como enviada.",
+    );
+    setSelected(null);
     await loadData();
   }
 
@@ -870,7 +951,7 @@ export function NinjaGreenApp({
       });
       const payload = (await response.json().catch(() => ({}))) as {
         error?: string;
-        mode?: "provider" | "manual";
+        mode?: "queue" | "manual";
         whatsappUrl?: string | null;
       };
       if (!response.ok) {
@@ -884,8 +965,8 @@ export function NinjaGreenApp({
           description: "A atividade foi registrada no histórico.",
         });
       } else {
-        toast.success("Mensagem enviada pela ZPRO", {
-          description: "O resultado foi registrado no histórico.",
+        toast.success("Mensagem adicionada à fila", {
+          description: "O envio será processado em segundo plano.",
         });
       }
       setMessageLead(null);
@@ -1158,6 +1239,8 @@ export function NinjaGreenApp({
         onClose={() => setSelected(null)}
         onSend={sendMessage}
         onStatusChange={updateLeadStatus}
+        onDoNotContactChange={updateDoNotContact}
+        onResolveUnknown={resolveUnknownMessage}
         onDelete={deleteLead}
       />
       <NotificationsSheet
@@ -1363,7 +1446,7 @@ function Dashboard({
       ? 0
       : leads.filter(
           (lead) =>
-            lead.nextRunAt && new Date(lead.nextRunAt).getTime() <= currentTime,
+            !lead.doNotContact && lead.nextRunAt && new Date(lead.nextRunAt).getTime() <= currentTime,
         ).length;
   const replies = leads.filter((lead) => lead.status === "Respondeu").length;
   const qualified = leads.filter(
@@ -2298,6 +2381,8 @@ function LeadSheet({
   onClose,
   onSend,
   onStatusChange,
+  onDoNotContactChange,
+  onResolveUnknown,
   onDelete,
 }: {
   lead: Lead | null;
@@ -2307,6 +2392,8 @@ function LeadSheet({
   onClose: () => void;
   onSend: (l: Lead) => void;
   onStatusChange: (lead: Lead, status: LeadStatus) => void;
+  onDoNotContactChange: (lead: Lead, doNotContact: boolean) => void;
+  onResolveUnknown: (messageId: string, action: "resend" | "mark_sent") => void;
   onDelete: (lead: Lead) => void;
 }) {
   const back = useBackClosable(Boolean(lead), onClose);
@@ -2373,11 +2460,24 @@ function LeadSheet({
           </div>
           <Button
             onClick={() => onSend(lead)}
+            disabled={lead.doNotContact}
             className="h-12 w-full rounded-xl bg-[#22a568] hover:bg-[#198a56]"
           >
             <MessageCircle className="mr-2 size-5" />
             Abrir conversa no WhatsApp
           </Button>
+          <label className="flex items-center justify-between gap-4 rounded-xl border border-[#ead8d5] bg-[#fff7f5] p-4 text-sm font-semibold text-[#7e302a]">
+            <span>
+              <span className="block">Não contatar</span>
+              <span className="mt-1 block text-xs font-normal text-[#98635e]">
+                Bloqueia fila, cadências e abertura manual do WhatsApp.
+              </span>
+            </span>
+            <Switch
+              checked={Boolean(lead.doNotContact)}
+              onCheckedChange={(value) => onDoNotContactChange(lead, value)}
+            />
+          </label>
           <section>
             <h3 className="text-xs font-bold uppercase tracking-[.12em] text-[#83928b]">
               Informações
@@ -2418,6 +2518,12 @@ function LeadSheet({
                     <p className="mt-1 text-[11px] text-[#9aa7a1]">
                       {item.time}
                     </p>
+                    {item.queueStatus === "unknown" && (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <Button size="sm" variant="outline" onClick={() => onResolveUnknown(item.id, "mark_sent")}>Marcar como enviada</Button>
+                        <Button size="sm" className="bg-[#0b553f] hover:bg-[#074632]" onClick={() => onResolveUnknown(item.id, "resend")}>Reenviar</Button>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}

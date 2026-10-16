@@ -88,7 +88,7 @@ export async function GET() {
   const { data: connections, error } = await supabase
     .from("whatsapp_connections")
     .select(
-      "id,owner_id,name,provider,endpoint_url,instance_name,channel_id,active,created_at",
+      "id,owner_id,name,provider,endpoint_url,instance_name,channel_id,active,daily_limit,health_status,health_error,created_at",
     )
     .order("created_at", { ascending: false });
   if (error) {
@@ -141,6 +141,9 @@ export async function GET() {
           ? item.channel_id
           : null,
       active: item.active,
+      dailyLimit: item.daily_limit,
+      healthStatus: item.health_status,
+      healthError: item.health_error,
       owner: item.owner_id === user.id,
       hasToken: tokenConnectionIds.has(item.id),
       attendants: (attendantsResult.data || [])

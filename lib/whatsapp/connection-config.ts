@@ -60,3 +60,28 @@ export async function getConnectionCredentials(
     token: data.api_token,
   };
 }
+
+export async function getOwnedConnectionCredentials(
+  ownerId: string,
+  connectionId: string,
+): Promise<WhatsAppProviderCredentials> {
+  const admin = createSupabaseAdminClient();
+  const { data: connection, error: connectionError } = await admin
+    .from("whatsapp_connections")
+    .select("id,endpoint_url,instance_name")
+    .eq("id", connectionId)
+    .eq("owner_id", ownerId)
+    .eq("provider", "zpro")
+    .maybeSingle();
+  if (connectionError) {
+    throw new Error("Não foi possível consultar a conexão ZPRO.");
+  }
+  if (!connection) {
+    throw new Error("A conexão ZPRO não pertence ao dono da mensagem.");
+  }
+  return getConnectionCredentials(
+    connection.id,
+    connection.endpoint_url,
+    connection.instance_name,
+  );
+}

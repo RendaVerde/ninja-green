@@ -130,6 +130,9 @@ export async function PATCH(
       channel_number: null,
       channel_id: channelId,
       active: parsed.data.active,
+      health_status: "unknown",
+      health_error: null,
+      health_checked_at: null,
       updated_at: new Date().toISOString(),
     })
     .eq("id", id)

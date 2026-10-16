@@ -22,6 +22,7 @@ export async function POST(
     .from("whatsapp_connections")
     .select("id,provider,endpoint_url,instance_name,channel_id,active")
     .eq("id", id)
+    .eq("owner_id", user.id)
     .maybeSingle();
   if (error || !connection) {
     return NextResponse.json(
@@ -56,8 +57,30 @@ export async function POST(
     );
     const provider = createWhatsAppProvider("zpro", credentials);
     const result = await provider.testConnection(connection.channel_id);
+    await supabase
+      .from("whatsapp_connections")
+      .update({
+        health_status: "ready",
+        health_error: null,
+        health_checked_at: new Date().toISOString(),
+      })
+      .eq("id", connection.id)
+      .eq("owner_id", user.id);
     return NextResponse.json(result);
   } catch (testError) {
+    const errorMessage =
+      testError instanceof Error
+        ? testError.message
+        : "Não foi possível testar a conexão ZPRO.";
+    await supabase
+      .from("whatsapp_connections")
+      .update({
+        health_status: "error",
+        health_error: errorMessage,
+        health_checked_at: new Date().toISOString(),
+      })
+      .eq("id", connection.id)
+      .eq("owner_id", user.id);
     if (testError instanceof WhatsAppProviderError) {
       return NextResponse.json(
         { error: testError.message, code: testError.code },
@@ -72,9 +95,7 @@ export async function POST(
     return NextResponse.json(
       {
         error:
-          testError instanceof Error
-            ? testError.message
-            : "Não foi possível testar a conexão ZPRO.",
+          errorMessage,
       },
       { status: 500 },
     );
