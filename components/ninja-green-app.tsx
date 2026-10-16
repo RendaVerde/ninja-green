@@ -85,6 +85,7 @@ import { ProfileDialog, UserProfile } from "@/components/profile-dialog";
 import { QuickMessagesView } from "@/components/quick-messages/quick-messages-view";
 import { AttachmentUploader } from "@/components/message-attachments/attachment-uploader";
 import { WhatsAppConnections } from "@/components/whatsapp-connections";
+import { OutboundControlCenter } from "@/components/outbound/outbound-control-center";
 import type { AudienceConflict, SequenceAudience } from "@/lib/audience";
 import {
   defaultSequence,
@@ -104,7 +105,7 @@ import {
 import { buildWhatsAppUrl } from "@/lib/whatsapp";
 import { useBackClosable } from "@/hooks/use-back-closable";
 
-type View = "inicio" | "contatos" | "sequencias" | "mensagens" | "conexoes";
+type View = "inicio" | "contatos" | "sequencias" | "mensagens" | "envios" | "conexoes";
 type ContactListFilter =
   | "Todos"
   | LeadKind
@@ -117,6 +118,7 @@ type AppNotification = {
   detail: string;
   leadId?: string;
   urgent?: boolean;
+  actionView?: View;
 };
 type AppDataPayload = {
   error?: string;
@@ -224,6 +226,7 @@ export function NinjaGreenApp({
   const [selected, setSelected] = useState<Lead | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [operationNotifications, setOperationNotifications] = useState<AppNotification[]>([]);
   const [profileOpen, setProfileOpen] = useState(false);
   const [profile, setProfile] = useState<UserProfile>(currentUser);
   const [messageLead, setMessageLead] = useState<Lead | null>(null);
@@ -256,6 +259,8 @@ export function NinjaGreenApp({
     useState<SequenceAudience>("Todos os contatos");
   const [pauseOnReply, setPauseOnReply] = useState(true);
   const [sequenceActive, setSequenceActive] = useState(true);
+  const [sequenceConnectionId, setSequenceConnectionId] = useState<string | null>(null);
+  const [sequencePriority, setSequencePriority] = useState(100);
   const [sequenceTagIds, setSequenceTagIds] = useState<string[]>([]);
   const [sequenceContactIds, setSequenceContactIds] = useState<string[]>([]);
   const [sequenceDirty, setSequenceDirty] = useState(false);
@@ -323,6 +328,8 @@ export function NinjaGreenApp({
     setSequenceAudience(item.audience);
     setPauseOnReply(item.pauseOnReply);
     setSequenceActive(item.active);
+    setSequenceConnectionId(item.connectionId || null);
+    setSequencePriority(item.priority ?? 100);
     setSequenceTagIds(item.tagIds || []);
     setSequenceContactIds(item.contactIds || []);
     setSequence(
@@ -399,6 +406,31 @@ export function NinjaGreenApp({
     return () => window.clearTimeout(timer);
   }, [loadData]);
 
+  useEffect(() => {
+    if (!authEnabled) return;
+    let active = true;
+    void fetch("/api/outbound/overview", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const payload = await response.json() as {
+          connections?: Array<{ id: string; name: string; health_status: string }>;
+          legacyHolds?: Array<{ id: string; contacts: { name: string } | null }>;
+          messages?: Array<{ queue_status: string }>;
+        };
+        if (!active) return;
+        const messagesNeedingAction = (payload.messages || []).filter((item) => item.queue_status === "failed" || item.queue_status === "unknown").length;
+        setOperationNotifications([
+          ...(messagesNeedingAction > 0 ? [{ id: "outbound-attention", title: `${messagesNeedingAction} envio(s) precisam de ação`, detail: "Abra a central para revisar falhas e envios incertos.", urgent: true, actionView: "envios" as View }] : []),
+          ...(payload.connections || [])
+            .filter((item) => item.health_status === "error" || item.health_status === "unavailable")
+            .map((item) => ({ id: `connection-${item.id}`, title: `Conexão ${item.name} indisponível`, detail: "Os envios ficam pendentes até a recuperação.", urgent: true, actionView: "envios" as View })),
+          ...(payload.legacyHolds || []).map((item) => ({ id: `legacy-${item.id}`, title: "Passivo retido para revisão", detail: `${item.contacts?.name || "Contato"} não será enviado automaticamente.`, urgent: true, actionView: "envios" as View })),
+        ]);
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [authEnabled]);
+
   const visibleLeads = useMemo(
     () =>
       leads.filter((lead) => {
@@ -423,7 +455,7 @@ export function NinjaGreenApp({
   );
 
   const notifications = useMemo<AppNotification[]>(() => {
-    const items = leads.flatMap((lead) => {
+    const items = [...operationNotifications, ...leads.flatMap((lead) => {
       const result: AppNotification[] = [];
       if (
         currentTime !== null &&
@@ -470,7 +502,7 @@ export function NinjaGreenApp({
           urgent: true,
         });
       return result;
-    });
+    })];
     if (!leads.length && !dataLoading)
       items.push({
         id: "empty",
@@ -478,7 +510,7 @@ export function NinjaGreenApp({
         detail: "Use o botão Novo contato para iniciar sua operação.",
       });
     return items;
-  }, [currentTime, dataLoading, leads]);
+  }, [currentTime, dataLoading, leads, operationNotifications]);
 
   async function sendMessage(lead: Lead) {
     const assignedSequence = lead.sequenceId
@@ -581,6 +613,8 @@ export function NinjaGreenApp({
       setSequenceAudience("Todos os contatos");
       setPauseOnReply(true);
       setSequenceActive(true);
+      setSequenceConnectionId(null);
+      setSequencePriority(100);
       setSequenceTagIds([]);
       setSequenceContactIds([]);
       setSequence(
@@ -652,6 +686,8 @@ export function NinjaGreenApp({
             audience: sequenceAudience,
             pauseOnReply,
             active: sequenceActive,
+            connectionId: sequenceConnectionId,
+            priority: sequencePriority,
             steps: sequence,
           }),
         });
@@ -676,6 +712,8 @@ export function NinjaGreenApp({
                   audience: sequenceAudience,
                   pauseOnReply,
                   active: sequenceActive,
+                  connectionId: sequenceConnectionId,
+                  priority: sequencePriority,
                   tagIds: [],
                   contactIds: [],
                   steps: sequence,
@@ -723,6 +761,8 @@ export function NinjaGreenApp({
           audience: sequenceAudience,
           pauseOnReply,
           active: sequenceActive,
+          connectionId: sequenceConnectionId,
+          priority: sequencePriority,
           steps: sequence,
         }),
       });
@@ -1033,6 +1073,12 @@ export function NinjaGreenApp({
             active={view === "conexoes"}
             onClick={() => setView("conexoes")}
           />
+          <Nav
+            icon={Settings}
+            label="Central de envios"
+            active={view === "envios"}
+            onClick={() => setView("envios")}
+          />
           {isAdmin && (
             <button
               onClick={() => router.push("/admin")}
@@ -1097,10 +1143,10 @@ export function NinjaGreenApp({
           </div>
           <div className="ml-auto flex items-center gap-2">
             <Button
-              onClick={() => setView("conexoes")}
+              onClick={() => setView("envios")}
               variant="ghost"
               size="icon"
-              aria-label="Configurar conexões WhatsApp"
+              aria-label="Abrir central de envios"
               className="rounded-full text-[#4f675d]"
             >
               <Settings className="size-5" />
@@ -1189,6 +1235,16 @@ export function NinjaGreenApp({
                 setSequenceActive(active);
                 setSequenceDirty(true);
               }}
+              connectionId={sequenceConnectionId}
+              setConnectionId={(connectionId) => {
+                setSequenceConnectionId(connectionId);
+                setSequenceDirty(true);
+              }}
+              priority={sequencePriority}
+              setPriority={(priority) => {
+                setSequencePriority(priority);
+                setSequenceDirty(true);
+              }}
               tags={tags}
               leads={leads}
               selectedTagIds={sequenceTagIds}
@@ -1221,6 +1277,7 @@ export function NinjaGreenApp({
             />
           )}
           {view === "conexoes" && <WhatsAppConnections />}
+          {view === "envios" && <OutboundControlCenter />}
         </div>
       </main>
 
@@ -1248,7 +1305,8 @@ export function NinjaGreenApp({
         onClose={() => setNotificationsOpen(false)}
         notifications={notifications}
         onSelect={(item) => {
-          if (item.leadId)
+          if (item.actionView) setView(item.actionView);
+          else if (item.leadId)
             setSelected(leads.find((lead) => lead.id === item.leadId) || null);
           else setAddOpen(true);
         }}
@@ -1854,6 +1912,10 @@ type SequenceProps = {
   setPauseOnReply: (pause: boolean) => void;
   active: boolean;
   setActive: (active: boolean) => void;
+  connectionId: string | null;
+  setConnectionId: (connectionId: string | null) => void;
+  priority: number;
+  setPriority: (priority: number) => void;
   tags: ContactTag[];
   leads: Lead[];
   selectedTagIds: string[];
@@ -1883,6 +1945,10 @@ function Sequences({
   setPauseOnReply,
   active,
   setActive,
+  connectionId,
+  setConnectionId,
+  priority,
+  setPriority,
   tags,
   leads,
   selectedTagIds,
@@ -1898,6 +1964,17 @@ function Sequences({
   onSave,
   saving,
 }: SequenceProps) {
+  const [connections, setConnections] = useState<Array<{ id: string; name: string; active: boolean; healthStatus: string }>>([]);
+  useEffect(() => {
+    let activeRequest = true;
+    void fetch("/api/whatsapp-connections", { cache: "no-store" })
+      .then(async (response) => response.json() as Promise<{ connections?: Array<{ id: string; name: string; provider: string; active: boolean; healthStatus: string; owner: boolean }> }>)
+      .then((payload) => {
+        if (activeRequest) setConnections((payload.connections || []).filter((item) => item.owner && item.provider === "zpro"));
+      })
+      .catch(() => undefined);
+    return () => { activeRequest = false; };
+  }, []);
   const updateStep = (id: string, patch: Partial<SequenceStep>) =>
     setSteps(
       steps.map((step) => (step.id === id ? { ...step, ...patch } : step)),
@@ -1950,6 +2027,8 @@ function Sequences({
     setName("Follow-up principal");
     setAudience("Todos os contatos");
     setPauseOnReply(true);
+    setConnectionId(null);
+    setPriority(100);
     setSelectedTagIds([]);
     setSelectedContactIds([]);
     toast.success("Sequência padrão restaurada");
@@ -2019,6 +2098,26 @@ function Sequences({
                 onManageTags={onManageTags}
               />
             </div>
+            <div className="mt-5 grid gap-4 sm:grid-cols-2">
+              <Field label="Conexão da cadência">
+                <select
+                  value={connectionId || ""}
+                  onChange={(event) => setConnectionId(event.target.value || null)}
+                  className="h-10 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+                >
+                  <option value="">Modo manual (sem conexão)</option>
+                  {connections.map((connection) => (
+                    <option key={connection.id} value={connection.id} disabled={!connection.active || connection.healthStatus === "error" || connection.healthStatus === "unavailable"}>
+                      {connection.name}{!connection.active ? " (pausada)" : connection.healthStatus === "error" || connection.healthStatus === "unavailable" ? " (indisponível)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Prioridade (maior envia primeiro)">
+                <Input type="number" min={0} max={1000} value={priority} onChange={(event) => setPriority(Math.max(0, Math.min(1000, Number(event.target.value))))} />
+              </Field>
+            </div>
+            {!connectionId && <p className="mt-3 rounded-xl bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">Sem conexão selecionada, os follow-ups permanecem no modo manual e não entram na fila automática.</p>}
             <div className="mt-4 flex items-center justify-between rounded-xl bg-[#f3f7f4] p-4">
               <div>
                 <p className="text-sm font-bold">
@@ -2148,6 +2247,14 @@ function Sequences({
                           }
                         />
                       </Field>
+                      <Field label="Horário específico (opcional)">
+                        <Input
+                          type="time"
+                          value={step.sendTime || ""}
+                          onChange={(event) => updateStep(step.id, { sendTime: event.target.value || null })}
+                        />
+                        <span className="font-normal text-[#71827a]">Em branco, usa o horário padrão das configurações.</span>
+                      </Field>
                       <MessageTemplateEditor
                         value={step.message}
                         onChange={(message) => updateStep(step.id, { message })}
@@ -2201,10 +2308,10 @@ function Sequences({
           </div>
           <div className="mt-3 rounded-xl bg-white/[.07] p-4 text-xs leading-5 text-emerald-50/70">
             <strong className="mb-1 block text-white">
-              WhatsApp disponível agora
+              Envio automático protegido
             </strong>
-            O sistema abre a conversa com a mensagem preenchida e registra a
-            atividade. O envio automático entra quando a UazAPI for conectada.
+            A conexão, a prioridade e o horário podem ser definidos por
+            cadência. Etapas sem horário usam o padrão da janela segura.
           </div>
         </aside>
       </div>
@@ -2397,9 +2504,30 @@ function LeadSheet({
   onDelete: (lead: Lead) => void;
 }) {
   const back = useBackClosable(Boolean(lead), onClose);
+  const [fullHistory, setFullHistory] = useState<{ contactId: string; items: Lead["history"] } | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  useEffect(() => {
+    if (!lead) return;
+    let active = true;
+    const contactId = lead.id;
+    const timer = window.setTimeout(() => {
+      setHistoryLoading(true);
+      void fetch(`/api/contacts/${contactId}/history`, { cache: "no-store" })
+        .then(async (response) => {
+          const payload = await response.json() as { history?: Lead["history"] };
+          if (active && response.ok) setFullHistory({ contactId, items: payload.history || [] });
+        })
+        .finally(() => {
+          if (active) setHistoryLoading(false);
+        });
+    }, 0);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [lead]);
   if (!lead) return null;
-  const timeline = lead.history?.length
-    ? lead.history
+  const timeline = fullHistory?.contactId === lead.id && fullHistory.items?.length
+    ? fullHistory.items
+    : lead.history?.length
+      ? lead.history
     : [
         {
           id: "created",
@@ -2509,6 +2637,7 @@ function LeadSheet({
               Histórico
             </h3>
             <div className="mt-4 space-y-5">
+              {historyLoading && <div className="flex items-center gap-2 text-xs text-[#71827a]"><Loader2 className="size-4 animate-spin" />Carregando histórico completo…</div>}
               {timeline.map((item) => (
                 <div key={item.id} className="flex gap-3">
                   <span className="mt-1.5 size-2 rounded-full bg-[#93c83e] ring-4 ring-[#edf6e5]" />

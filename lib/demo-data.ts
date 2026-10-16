@@ -46,6 +46,7 @@ export type SequenceStep = {
   message: string;
   attachments: MessageAttachment[];
   enabled: boolean;
+  sendTime?: string | null;
 };
 
 export type FollowUpSequence = {
@@ -54,6 +55,8 @@ export type FollowUpSequence = {
   audience: SequenceAudience;
   pauseOnReply: boolean;
   active: boolean;
+  connectionId?: string | null;
+  priority?: number;
   tagIds: string[];
   contactIds: string[];
   steps: SequenceStep[];

@@ -72,7 +72,7 @@ type SendConnection = {
   provider: string;
   active: boolean;
   owner: boolean;
-  healthStatus?: "unknown" | "ready" | "error";
+  healthStatus?: "unknown" | "ready" | "unavailable" | "error";
 };
 
 type QuickMessagesViewProps = {
@@ -677,8 +677,8 @@ export function QuickMessagesView({
                   >
                     {sendConnections.length > 1 && <option value="">Selecione uma conexão</option>}
                     {sendConnections.map((connection) => (
-                      <option key={connection.id} value={connection.id} disabled={connection.healthStatus === "error"}>
-                        {connection.name}{connection.healthStatus === "error" ? " (com erro)" : ""}
+                      <option key={connection.id} value={connection.id} disabled={connection.healthStatus === "error" || connection.healthStatus === "unavailable"}>
+                        {connection.name}{connection.healthStatus === "error" ? " (com erro)" : connection.healthStatus === "unavailable" ? " (indisponível)" : ""}
                       </option>
                     ))}
                   </select>

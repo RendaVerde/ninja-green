@@ -22,6 +22,7 @@ const updateSchema = z.object({
   apiToken: z.string().trim().max(2000).optional(),
   channelId: z.string().trim().max(20).default(""),
   active: z.boolean(),
+  dailyLimit: z.number().int().min(1).max(10000),
 });
 
 export async function PATCH(
@@ -130,6 +131,7 @@ export async function PATCH(
       channel_number: null,
       channel_id: channelId,
       active: parsed.data.active,
+      daily_limit: parsed.data.dailyLimit,
       health_status: "unknown",
       health_error: null,
       health_checked_at: null,

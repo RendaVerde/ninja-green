@@ -31,6 +31,7 @@ const connectionSchema = z
     apiToken: z.string().trim().max(2000).default(""),
     channelId: z.string().trim().max(20).default(""),
     active: z.boolean().default(true),
+    dailyLimit: z.number().int().min(1).max(10000).default(30),
     attendants: z.array(attendantSchema).max(30).default([]),
   })
   .superRefine((value, context) => {
@@ -221,6 +222,7 @@ export async function POST(request: Request) {
       channel_id:
         parsed.data.provider === "zpro" ? Number(parsed.data.channelId) : null,
       active: parsed.data.active,
+      daily_limit: parsed.data.dailyLimit,
     })
     .select("id")
     .single();

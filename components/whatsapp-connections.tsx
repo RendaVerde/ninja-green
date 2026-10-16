@@ -15,7 +15,7 @@ import { maskZproApiId, parseZproConnectionAddress } from "@/lib/whatsapp/zpro-c
 
 type Provider = "uazapi" | "baileys" | "evolution" | "evolution_go" | "zpro";
 type Attendant = { id: string; profileName: string; email: string; role: "attendant" | "manager"; linked: boolean };
-type Connection = { id: string; name: string; provider: Provider; endpointUrl: string; endpointConfigured: boolean; instanceName: string; apiIdMasked: string; channelId: number | null; active: boolean; owner: boolean; hasToken: boolean; dailyLimit: number; healthStatus: "unknown" | "ready" | "error"; healthError?: string | null; attendants: Attendant[] };
+type Connection = { id: string; name: string; provider: Provider; endpointUrl: string; endpointConfigured: boolean; instanceName: string; apiIdMasked: string; channelId: number | null; active: boolean; owner: boolean; hasToken: boolean; dailyLimit: number; healthStatus: "unknown" | "ready" | "unavailable" | "error"; healthError?: string | null; attendants: Attendant[] };
 const providerLabels: Record<Provider, string> = { uazapi: "UazApi", baileys: "Baileys", evolution: "Evolution", evolution_go: "Evolution GO", zpro: "ZPRO" };
 
 export function WhatsAppConnections() {
@@ -127,7 +127,7 @@ export function WhatsAppConnections() {
     event.preventDefault(); setSaving(true);
     const data = new FormData(event.currentTarget);
     try {
-      const response = await fetch(editing ? `/api/whatsapp-connections/${editing.id}` : "/api/whatsapp-connections", { method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: data.get("name"), provider, endpointUrl: data.get("endpointUrl"), instanceName: data.get("instanceName"), apiToken: data.get("apiToken"), channelId: data.get("channelId"), active, attendants: [] }) });
+      const response = await fetch(editing ? `/api/whatsapp-connections/${editing.id}` : "/api/whatsapp-connections", { method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: data.get("name"), provider, endpointUrl: data.get("endpointUrl"), instanceName: data.get("instanceName"), apiToken: data.get("apiToken"), channelId: data.get("channelId"), active, dailyLimit: Number(data.get("dailyLimit")), attendants: [] }) });
       const result = await response.json() as { error?: string };
       if (!response.ok) throw new Error(result.error || "Não foi possível salvar a conexão.");
       setDialogOpen(false); toast.success(editing ? "Conexão atualizada" : "Conexão criada"); await loadConnections();
@@ -169,6 +169,7 @@ export function WhatsAppConnections() {
       const result = await response.json() as { error?: string; message?: string };
       if (!response.ok) throw new Error(result.error || "Não foi possível testar a conexão.");
       toast.success(result.message || "Conexão validada com sucesso.");
+      await loadConnections();
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : "Não foi possível testar a conexão.");
     } finally {
@@ -246,6 +247,7 @@ export function WhatsAppConnections() {
             </div>
             {connection.provider === "zpro" && connection.endpointConfigured && <p className="mt-4 rounded-lg bg-[#f4f7f5] px-3 py-2 text-xs text-[#5f746a]">Backend configurado (oculto)</p>}
             {connection.provider !== "zpro" && connection.endpointUrl && <p className="mt-4 truncate rounded-lg bg-[#f4f7f5] px-3 py-2 text-xs text-[#5f746a]">{connection.endpointUrl}</p>}
+            {connection.provider === "zpro" && <div className={`mt-3 rounded-lg px-3 py-2 text-xs ${connection.healthStatus === "ready" ? "bg-emerald-50 text-emerald-700" : connection.healthStatus === "error" || connection.healthStatus === "unavailable" ? "bg-red-50 text-red-700" : "bg-slate-100 text-slate-600"}`}>Saúde: {connection.healthStatus === "ready" ? "disponível" : connection.healthStatus === "unavailable" ? "temporariamente indisponível" : connection.healthStatus === "error" ? "com erro" : "não testada"}{connection.healthError ? ` · ${connection.healthError}` : ""} · limite {connection.dailyLimit}/dia</div>}
             <div className="mt-5 border-t border-[#e9eeeb] pt-4">
               <div className="flex items-center justify-between">
                 <div>
@@ -362,6 +364,9 @@ export function WhatsAppConnections() {
                 <span className="font-normal text-[#71827a]">Informe somente o número inteiro e positivo, sem o caractere #.</span>
               </div>
             )}
+            <Field label="Limite diário de envios">
+              <Input name="dailyLimit" type="number" inputMode="numeric" min={1} max={10000} required defaultValue={editing?.dailyLimit ?? 30} />
+            </Field>
             <label className="flex items-center justify-between rounded-xl bg-[#f3f7f4] p-4 text-sm font-semibold sm:col-span-2">Conexão ativa<Switch checked={active} onCheckedChange={setActive} /></label>
             <div className="flex justify-end gap-2 sm:col-span-2">
               <Button type="button" variant="ghost" onClick={() => setDialogOpen(false)}>Cancelar</Button>

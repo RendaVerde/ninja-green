@@ -31,10 +31,10 @@ export async function POST(
   }
   const { data: message, error } = await supabase
     .from("messages")
-    .select("id,owner_id,contact_id,connection_id,body,source,priority")
+    .select("id,owner_id,contact_id,connection_id,body,source,priority,queue_status,cancel_reason")
     .eq("id", id)
     .eq("owner_id", user.id)
-    .eq("queue_status", "unknown")
+    .in("queue_status", ["unknown", "failed"])
     .maybeSingle();
   if (error) {
     return NextResponse.json(
@@ -44,11 +44,17 @@ export async function POST(
   }
   if (!message) {
     return NextResponse.json(
-      { error: "Esta mensagem não está mais com envio incerto." },
+      { error: "Esta mensagem não pode mais ser reenviada." },
       { status: 409 },
     );
   }
   if (parsed.data.action === "mark_sent") {
+    if (message.queue_status !== "unknown") {
+      return NextResponse.json(
+        { error: "Somente um envio incerto pode ser marcado como enviado." },
+        { status: 409 },
+      );
+    }
     const sentAt = new Date().toISOString();
     const { data: updatedMessage, error: updateError } = await supabase
       .from("messages")
@@ -135,19 +141,25 @@ export async function POST(
   const newMessageId = crypto.randomUUID();
   const now = new Date().toISOString();
   const cancelReason = `resubmitted_as:${newMessageId}`;
-  const { data: canceledMessage, error: cancelError } = await supabase
-    .from("messages")
-    .update({
-      queue_status: "canceled",
-      status: "failed",
-      canceled_at: now,
-      cancel_reason: cancelReason,
-    })
-    .eq("id", message.id)
-    .eq("owner_id", user.id)
-    .eq("queue_status", "unknown")
-    .select("id")
-    .maybeSingle();
+  const reservation = message.queue_status === "unknown"
+    ? await supabase
+        .from("messages")
+        .update({ queue_status: "canceled", status: "failed", canceled_at: now, cancel_reason: cancelReason })
+        .eq("id", message.id)
+        .eq("owner_id", user.id)
+        .eq("queue_status", "unknown")
+        .select("id")
+        .maybeSingle()
+    : await supabase
+        .from("messages")
+        .update({ cancel_reason: cancelReason })
+        .eq("id", message.id)
+        .eq("owner_id", user.id)
+        .eq("queue_status", "failed")
+        .is("cancel_reason", null)
+        .select("id")
+        .maybeSingle();
+  const { data: canceledMessage, error: cancelError } = reservation;
   if (cancelError) {
     return NextResponse.json(
       { error: "Não foi possível reservar o reenvio." },
@@ -156,7 +168,7 @@ export async function POST(
   }
   if (!canceledMessage) {
     return NextResponse.json(
-      { error: "Esta mensagem já foi resolvida." },
+      { error: "Esta mensagem já foi resolvida ou reenviada." },
       { status: 409 },
     );
   }
@@ -177,17 +189,23 @@ export async function POST(
     confirmed_at: now,
   });
   if (insertError) {
-    await supabase
-      .from("messages")
-      .update({
-        queue_status: "unknown",
-        canceled_at: null,
-        cancel_reason: null,
-      })
-      .eq("id", message.id)
-      .eq("owner_id", user.id)
-      .eq("queue_status", "canceled")
-      .eq("cancel_reason", cancelReason);
+    if (message.queue_status === "unknown") {
+      await supabase
+        .from("messages")
+        .update({ queue_status: "unknown", canceled_at: null, cancel_reason: null })
+        .eq("id", message.id)
+        .eq("owner_id", user.id)
+        .eq("queue_status", "canceled")
+        .eq("cancel_reason", cancelReason);
+    } else {
+      await supabase
+        .from("messages")
+        .update({ cancel_reason: null })
+        .eq("id", message.id)
+        .eq("owner_id", user.id)
+        .eq("queue_status", "failed")
+        .eq("cancel_reason", cancelReason);
+    }
     return NextResponse.json(
       { error: "Não foi possível criar a nova tentativa." },
       { status: 500 },

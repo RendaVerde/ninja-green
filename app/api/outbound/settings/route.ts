@@ -13,6 +13,7 @@ const settingsSchema = z
     safeWindowEnd: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
     staleToleranceHours: z.number().int().min(1).max(168).optional(),
     hostConcurrencyLimit: z.number().int().min(1).max(50).optional(),
+    perConnectionBatchLimit: z.number().int().min(1).max(50).optional(),
   })
   .refine(
     (value) =>
@@ -99,6 +100,9 @@ export async function PATCH(request: Request) {
         : {}),
       ...(parsed.data.hostConcurrencyLimit !== undefined
         ? { host_concurrency_limit: parsed.data.hostConcurrencyLimit }
+        : {}),
+      ...(parsed.data.perConnectionBatchLimit !== undefined
+        ? { per_connection_batch_limit: parsed.data.perConnectionBatchLimit }
         : {}),
       updated_at: new Date().toISOString(),
     },
