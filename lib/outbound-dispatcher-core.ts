@@ -6,10 +6,12 @@ export type ClaimedOutboundMessage = {
   body: string;
   source: "single" | "quick" | "sequence";
   claimToken: string;
+  attemptCount: number;
 };
 
 export type OutboundDeliveryContext = ClaimedOutboundMessage & {
   phone: string;
+  baseUrl: string;
 };
 
 export type ProviderDeliveryResult = {
@@ -23,6 +25,7 @@ export type DispatchFailure = {
   code: string;
   message: string;
   status?: number;
+  retryAfterSeconds?: number;
 };
 
 export interface OutboundDispatchStore {
@@ -41,6 +44,17 @@ export interface OutboundDispatchStore {
   ): Promise<void>;
   markFailed(message: ClaimedOutboundMessage, failure: DispatchFailure): Promise<void>;
   markUnknown(message: ClaimedOutboundMessage, failure: DispatchFailure): Promise<void>;
+  markRetry(
+    message: ClaimedOutboundMessage,
+    failure: DispatchFailure,
+    delaySeconds: number,
+    consumeAttempt: boolean,
+  ): Promise<void>;
+  recordProviderSuccess(context: OutboundDeliveryContext): Promise<void>;
+  recordProviderFailure(
+    context: OutboundDeliveryContext,
+    failure: DispatchFailure,
+  ): Promise<void>;
   releaseUnstarted(messages: ClaimedOutboundMessage[]): Promise<void>;
 }
 
@@ -61,12 +75,19 @@ export type DispatcherSummary = {
   sent: number;
   failed: number;
   unknown: number;
+  retried: number;
+  deferred: number;
   released: number;
 };
 
 function toFailure(error: unknown): DispatchFailure {
   if (typeof error === "object" && error !== null) {
-    const candidate = error as { code?: unknown; message?: unknown; status?: unknown };
+    const candidate = error as {
+      code?: unknown;
+      message?: unknown;
+      status?: unknown;
+      retryAfterSeconds?: unknown;
+    };
     return {
       code: typeof candidate.code === "string" ? candidate.code : "WHATSAPP_SEND_ERROR",
       message:
@@ -74,12 +95,26 @@ function toFailure(error: unknown): DispatchFailure {
           ? candidate.message
           : "Não foi possível enviar a mensagem.",
       status: typeof candidate.status === "number" ? candidate.status : undefined,
+      retryAfterSeconds:
+        typeof candidate.retryAfterSeconds === "number"
+          ? candidate.retryAfterSeconds
+          : undefined,
     };
   }
   return {
     code: "WHATSAPP_SEND_ERROR",
     message: "Não foi possível enviar a mensagem.",
   };
+}
+
+export function isCircuitFailure(failure: DispatchFailure) {
+  return (
+    failure.code === "ZPRO_CONNECTION_ERROR" ||
+    failure.code === "ZPRO_TIMEOUT" ||
+    failure.status === 502 ||
+    failure.status === 503 ||
+    failure.status === 504
+  );
 }
 
 export function isProvablyNotSent(failure: DispatchFailure) {
@@ -121,6 +156,8 @@ export async function runOutboundDispatcher(
     sent: 0,
     failed: 0,
     unknown: 0,
+    retried: 0,
+    deferred: 0,
     released: 0,
   };
 
@@ -133,8 +170,9 @@ export async function runOutboundDispatcher(
     }
 
     let requestStarted = false;
+    let context: OutboundDeliveryContext | null = null;
     try {
-      const context = await store.loadContext(message);
+      context = await store.loadContext(message);
       const provider = await providerFactory(context);
       requestStarted = await store.markRequestStarted(message);
       if (!requestStarted) {
@@ -148,21 +186,41 @@ export async function runOutboundDispatcher(
         externalKey: context.id,
       });
       await store.markSent(message, result);
+      await store.recordProviderSuccess(context).catch(() => undefined);
       summary.sent += 1;
     } catch (error) {
       const failure = toFailure(error);
+      if (context && isCircuitFailure(failure)) {
+        await store.recordProviderFailure(context, failure).catch(() => undefined);
+      }
       if (
         !requestStarted &&
         (failure.code === "OUTBOUND_LIVE_SEND_DISABLED" ||
-          failure.code === "OUTBOUND_PAUSED")
+          failure.code === "OUTBOUND_PAUSED" ||
+          failure.code === "PROVIDER_CIRCUIT_OPEN")
       ) {
         await store.releaseUnstarted([message]);
         summary.released += 1;
         continue;
       }
+      if (requestStarted && failure.status === 429) {
+        await store.markRetry(
+          message,
+          failure,
+          Math.max(60, failure.retryAfterSeconds || 60),
+          false,
+        );
+        summary.deferred += 1;
+        continue;
+      }
       if (requestStarted && !isProvablyNotSent(failure)) {
-        await store.markUnknown(message, failure);
-        summary.unknown += 1;
+        if (message.attemptCount === 1) {
+          await store.markRetry(message, failure, 60, true);
+          summary.retried += 1;
+        } else {
+          await store.markUnknown(message, failure);
+          summary.unknown += 1;
+        }
       } else {
         await store.markFailed(message, failure);
         summary.failed += 1;

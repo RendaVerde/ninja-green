@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { getConnectionCredentials } from "@/lib/whatsapp/connection-config";
 import { createWhatsAppProvider } from "@/lib/whatsapp/factory";
 import { WhatsAppProviderError } from "@/lib/whatsapp/provider";
@@ -20,7 +21,7 @@ export async function POST(
   const { id } = await context.params;
   const { data: connection, error } = await supabase
     .from("whatsapp_connections")
-    .select("id,provider,endpoint_url,instance_name,channel_id,active")
+    .select("id,provider,endpoint_url,instance_name,channel_id,active,last_tested_at,circuit_open_until")
     .eq("id", id)
     .eq("owner_id", user.id)
     .maybeSingle();
@@ -48,6 +49,41 @@ export async function POST(
       { status: 400 },
     );
   }
+  const { data: settings } = await supabase
+    .from("outbound_settings")
+    .select("connection_test_interval_seconds")
+    .eq("user_id", user.id)
+    .maybeSingle();
+  const minimumInterval = settings?.connection_test_interval_seconds ?? 60;
+  if (
+    connection.last_tested_at &&
+    Date.now() - new Date(connection.last_tested_at).getTime() <
+      minimumInterval * 1000
+  ) {
+    const retryAfter = Math.ceil(
+      minimumInterval -
+        (Date.now() - new Date(connection.last_tested_at).getTime()) / 1000,
+    );
+    return NextResponse.json(
+      { error: `Aguarde ${retryAfter}s antes de testar novamente.` },
+      { status: 429, headers: { "Retry-After": String(retryAfter) } },
+    );
+  }
+  if (
+    connection.circuit_open_until &&
+    new Date(connection.circuit_open_until) > new Date()
+  ) {
+    const retryAfter = Math.max(
+      1,
+      Math.ceil(
+        (new Date(connection.circuit_open_until).getTime() - Date.now()) / 1000,
+      ),
+    );
+    return NextResponse.json(
+      { error: "O provedor está temporariamente indisponível." },
+      { status: 503, headers: { "Retry-After": String(retryAfter) } },
+    );
+  }
 
   try {
     const credentials = await getConnectionCredentials(
@@ -57,12 +93,18 @@ export async function POST(
     );
     const provider = createWhatsAppProvider("zpro", credentials);
     const result = await provider.testConnection(connection.channel_id);
+    await createSupabaseAdminClient().rpc("record_provider_circuit_result", {
+      target_base_url: credentials.baseUrl,
+      target_success: true,
+      target_failure_message: null,
+    });
     await supabase
       .from("whatsapp_connections")
       .update({
         health_status: "ready",
         health_error: null,
         health_checked_at: new Date().toISOString(),
+        last_tested_at: new Date().toISOString(),
       })
       .eq("id", connection.id)
       .eq("owner_id", user.id);
@@ -72,12 +114,26 @@ export async function POST(
       testError instanceof Error
         ? testError.message
         : "Não foi possível testar a conexão ZPRO.";
+    if (
+      connection.endpoint_url &&
+      testError instanceof WhatsAppProviderError &&
+      (testError.code === "ZPRO_CONNECTION_ERROR" ||
+        testError.code === "ZPRO_TIMEOUT" ||
+        [502, 503, 504].includes(testError.status))
+    ) {
+      await createSupabaseAdminClient().rpc("record_provider_circuit_result", {
+        target_base_url: connection.endpoint_url,
+        target_success: false,
+        target_failure_message: errorMessage,
+      });
+    }
     await supabase
       .from("whatsapp_connections")
       .update({
         health_status: "error",
         health_error: errorMessage,
         health_checked_at: new Date().toISOString(),
+        last_tested_at: new Date().toISOString(),
       })
       .eq("id", connection.id)
       .eq("owner_id", user.id);

@@ -7,10 +7,16 @@ const settingsSchema = z
   .object({
     automaticSendingEnabled: z.boolean().optional(),
     pauseAll: z.boolean().optional(),
+    timezone: z.string().trim().min(1).max(80).optional(),
+    defaultSendTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+    safeWindowStart: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+    safeWindowEnd: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+    staleToleranceHours: z.number().int().min(1).max(168).optional(),
+    hostConcurrencyLimit: z.number().int().min(1).max(50).optional(),
   })
   .refine(
     (value) =>
-      value.automaticSendingEnabled !== undefined || value.pauseAll !== undefined,
+      Object.values(value).some((item) => item !== undefined),
     "Nenhuma configuração foi informada.",
   );
 
@@ -24,7 +30,7 @@ export async function GET() {
   }
   const { data, error } = await supabase
     .from("outbound_settings")
-    .select("automatic_sending_enabled,pause_all,timezone,per_connection_batch_limit,last_used_connection_id")
+    .select("automatic_sending_enabled,pause_all,timezone,default_send_time,safe_window_start,safe_window_end,stale_tolerance_hours,host_concurrency_limit,per_connection_batch_limit,last_used_connection_id")
     .eq("user_id", user.id)
     .maybeSingle();
   if (error) {
@@ -37,6 +43,11 @@ export async function GET() {
     automaticSendingEnabled: data?.automatic_sending_enabled ?? false,
     pauseAll: data?.pause_all ?? false,
     timezone: data?.timezone ?? "America/Sao_Paulo",
+    defaultSendTime: data?.default_send_time?.slice(0, 5) ?? "09:00",
+    safeWindowStart: data?.safe_window_start?.slice(0, 5) ?? "08:00",
+    safeWindowEnd: data?.safe_window_end?.slice(0, 5) ?? "20:00",
+    staleToleranceHours: data?.stale_tolerance_hours ?? 12,
+    hostConcurrencyLimit: data?.host_concurrency_limit ?? 3,
     perConnectionBatchLimit: data?.per_connection_batch_limit ?? 3,
     lastUsedConnectionId: data?.last_used_connection_id ?? null,
   });
@@ -70,6 +81,24 @@ export async function PATCH(request: Request) {
         : {}),
       ...(parsed.data.pauseAll !== undefined
         ? { pause_all: parsed.data.pauseAll }
+        : {}),
+      ...(parsed.data.timezone !== undefined
+        ? { timezone: parsed.data.timezone }
+        : {}),
+      ...(parsed.data.defaultSendTime !== undefined
+        ? { default_send_time: parsed.data.defaultSendTime }
+        : {}),
+      ...(parsed.data.safeWindowStart !== undefined
+        ? { safe_window_start: parsed.data.safeWindowStart }
+        : {}),
+      ...(parsed.data.safeWindowEnd !== undefined
+        ? { safe_window_end: parsed.data.safeWindowEnd }
+        : {}),
+      ...(parsed.data.staleToleranceHours !== undefined
+        ? { stale_tolerance_hours: parsed.data.staleToleranceHours }
+        : {}),
+      ...(parsed.data.hostConcurrencyLimit !== undefined
+        ? { host_concurrency_limit: parsed.data.hostConcurrencyLimit }
         : {}),
       updated_at: new Date().toISOString(),
     },

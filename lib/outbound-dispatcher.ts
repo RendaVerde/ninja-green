@@ -27,6 +27,7 @@ type ClaimedRow = {
   body: string;
   source: "single" | "quick" | "sequence";
   claim_token: string;
+  attempt_count: number;
 };
 
 function mapClaimed(row: ClaimedRow): ClaimedOutboundMessage {
@@ -38,6 +39,7 @@ function mapClaimed(row: ClaimedRow): ClaimedOutboundMessage {
     body: row.body,
     source: row.source,
     claimToken: row.claim_token,
+    attemptCount: row.attempt_count,
   };
 }
 
@@ -45,7 +47,23 @@ async function advanceActiveSequence(
   admin: SupabaseClient,
   message: Pick<ClaimedOutboundMessage, "source" | "contactId" | "ownerId">,
 ) {
-  if (message.source !== "single") return;
+  if (message.source !== "sequence") return;
+  const { data: sentMessage } = await admin
+    .from("messages")
+    .select("id")
+    .eq("contact_id", message.contactId)
+    .eq("owner_id", message.ownerId)
+    .eq("source", "sequence")
+    .eq("queue_status", "sent")
+    .order("sent_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (sentMessage) {
+    await admin.rpc("advance_sequence_after_send", {
+      target_message_id: sentMessage.id,
+    });
+    return;
+  }
   const { data: link } = await admin
     .from("contact_sequences")
     .select("id,sequence_id,current_step")
@@ -115,7 +133,7 @@ class SupabaseOutboundDispatchStore implements OutboundDispatchStore {
         .maybeSingle(),
       this.admin
         .from("whatsapp_connections")
-        .select("id,active,health_status")
+        .select("id,active,health_status,endpoint_url,circuit_open_until")
         .eq("id", message.connectionId)
         .eq("owner_id", message.ownerId)
         .eq("provider", "zpro")
@@ -142,9 +160,13 @@ class SupabaseOutboundDispatchStore implements OutboundDispatchStore {
     if (contact.do_not_contact) throw Object.assign(new Error("Este contato está marcado como não contatar."), { status: 422, code: "DO_NOT_CONTACT" });
     if (!connection?.active) throw Object.assign(new Error("A conexão selecionada está inativa."), { status: 422, code: "CONNECTION_INACTIVE" });
     if (connection.health_status === "error") throw Object.assign(new Error("A conexão selecionada está com erro."), { status: 422, code: "CONNECTION_ERROR" });
+    if (!connection.endpoint_url) throw Object.assign(new Error("A conexão selecionada está incompleta."), { status: 422, code: "CONNECTION_ERROR" });
+    if (connection.circuit_open_until && new Date(connection.circuit_open_until) > new Date()) {
+      throw Object.assign(new Error("O provedor está temporariamente indisponível."), { code: "PROVIDER_CIRCUIT_OPEN" });
+    }
     const phone = normalizeWhatsAppPhone(contact.phone);
     if (!phone) throw Object.assign(new Error("O contato não possui um WhatsApp válido."), { status: 422, code: "INVALID_PHONE" });
-    return { ...message, phone };
+    return { ...message, phone, baseUrl: connection.endpoint_url };
   }
 
   async markRequestStarted(message: ClaimedOutboundMessage) {
@@ -170,16 +192,11 @@ class SupabaseOutboundDispatchStore implements OutboundDispatchStore {
       settings?.pause_all ||
       (message.source === "sequence" && !settings?.automatic_sending_enabled)
     ) return false;
-    const { data, error } = await this.admin
-      .from("messages")
-      .update({ request_started_at: new Date().toISOString() })
-      .eq("id", message.id)
-      .eq("owner_id", message.ownerId)
-      .eq("claim_token", message.claimToken)
-      .eq("queue_status", "sending")
-      .is("request_started_at", null)
-      .select("id")
-      .maybeSingle();
+    const { data, error } = await this.admin.rpc("mark_outbound_request_started", {
+      target_message_id: message.id,
+      target_owner_id: message.ownerId,
+      target_claim_token: message.claimToken,
+    });
     if (error) throw new Error("Não foi possível registrar o início da chamada.");
     return Boolean(data);
   }
@@ -213,7 +230,11 @@ class SupabaseOutboundDispatchStore implements OutboundDispatchStore {
       .eq("id", message.contactId)
       .eq("owner_id", message.ownerId)
       .eq("status", "Novo");
-    await advanceActiveSequence(this.admin, message);
+    if (message.source === "sequence") {
+      await this.admin.rpc("advance_sequence_after_send", {
+        target_message_id: message.id,
+      });
+    }
   }
 
   async markFailed(message: ClaimedOutboundMessage, failure: DispatchFailure) {
@@ -292,6 +313,56 @@ class SupabaseOutboundDispatchStore implements OutboundDispatchStore {
     }
   }
 
+  async markRetry(
+    message: ClaimedOutboundMessage,
+    failure: DispatchFailure,
+    delaySeconds: number,
+    consumeAttempt: boolean,
+  ) {
+    const nextAttemptAt = new Date(Date.now() + delaySeconds * 1000).toISOString();
+    await this.admin
+      .from("messages")
+      .update({
+        queue_status: "pending",
+        status: "queued",
+        attempt_count: consumeAttempt
+          ? message.attemptCount
+          : Math.max(0, message.attemptCount - 1),
+        ...(consumeAttempt ? {} : { first_request_started_at: null }),
+        next_attempt_at: nextAttemptAt,
+        request_started_at: null,
+        provider_error_code: failure.code,
+        provider_error_message: failure.message,
+        uncertainty_reason: consumeAttempt ? "ambiguous_retry_scheduled" : null,
+        claimed_at: null,
+        claim_token: null,
+        claim_expires_at: null,
+      })
+      .eq("id", message.id)
+      .eq("owner_id", message.ownerId)
+      .eq("claim_token", message.claimToken)
+      .eq("queue_status", "sending");
+  }
+
+  async recordProviderSuccess(context: OutboundDeliveryContext) {
+    await this.admin.rpc("record_provider_circuit_result", {
+      target_base_url: context.baseUrl,
+      target_success: true,
+      target_failure_message: null,
+    });
+  }
+
+  async recordProviderFailure(
+    context: OutboundDeliveryContext,
+    failure: DispatchFailure,
+  ) {
+    await this.admin.rpc("record_provider_circuit_result", {
+      target_base_url: context.baseUrl,
+      target_success: false,
+      target_failure_message: failure.message,
+    });
+  }
+
   async releaseUnstarted(messages: ClaimedOutboundMessage[]) {
     await Promise.all(
       messages.map((message) =>
@@ -359,7 +430,7 @@ export async function dispatchOutboundBatch(options: { ownerId?: string } = {}) 
       maxDurationMs: dispatcherMaxDurationMs,
       providerBudgetMs,
       batchSize: 3,
-      perConnectionLimit: 3,
+      perConnectionLimit: 1,
       leaseSeconds,
     },
   );

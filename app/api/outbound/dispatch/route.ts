@@ -1,38 +1,31 @@
-import { timingSafeEqual } from "node:crypto";
-
 import { NextResponse } from "next/server";
 
 import { dispatchOutboundBatch } from "@/lib/outbound-dispatcher";
+import { materializeDueSequenceMessages } from "@/lib/outbound-scheduler";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 45;
 
-function hasValidBearer(request: Request) {
-  const secret = process.env.CRON_SECRET;
+async function hasValidBearer(request: Request) {
   const authorization = request.headers.get("authorization") || "";
-  if (!secret || !authorization.startsWith("Bearer ")) return false;
+  if (!authorization.startsWith("Bearer ")) return false;
   const supplied = authorization.slice("Bearer ".length);
-  const expectedBuffer = Buffer.from(secret);
-  const suppliedBuffer = Buffer.from(supplied);
-  return (
-    expectedBuffer.length === suppliedBuffer.length &&
-    timingSafeEqual(expectedBuffer, suppliedBuffer)
+  const { data, error } = await createSupabaseAdminClient().rpc(
+    "verify_outbound_cron_bearer",
+    { target_bearer: supplied },
   );
+  return !error && data === true;
 }
 
 export async function POST(request: Request) {
-  if (!process.env.CRON_SECRET) {
-    return NextResponse.json(
-      { error: "O segredo do despachante não foi configurado." },
-      { status: 503 },
-    );
-  }
-  if (!hasValidBearer(request)) {
+  if (!(await hasValidBearer(request))) {
     return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
   }
   try {
+    const materialization = await materializeDueSequenceMessages();
     const summary = await dispatchOutboundBatch();
-    return NextResponse.json({ ok: true, ...summary });
+    return NextResponse.json({ ok: true, materialization, dispatch: summary });
   } catch {
     return NextResponse.json(
       { error: "Não foi possível processar a fila de saída." },

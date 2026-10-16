@@ -30,6 +30,32 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   };
   const { error } = await supabase.from("contacts").update(payload).eq("id", id).eq("owner_id", user.id);
   if (error) return NextResponse.json({ error: "Não foi possível atualizar o contato." }, { status: 500 });
+  if (doNotContact) {
+    const now = new Date().toISOString();
+    await Promise.all([
+      supabase
+        .from("messages")
+        .update({
+          queue_status: "canceled",
+          status: "failed",
+          canceled_at: now,
+          cancel_reason: "contact_do_not_contact",
+        })
+        .eq("owner_id", user.id)
+        .eq("contact_id", id)
+        .eq("queue_status", "pending"),
+      supabase
+        .from("contact_sequences")
+        .update({
+          paused_at: now,
+          pause_reason: "Contato marcado como não contatar.",
+          next_run_at: null,
+        })
+        .eq("contact_id", id)
+        .is("paused_at", null)
+        .is("completed_at", null),
+    ]);
+  }
   return NextResponse.json({ ok: true });
 }
 

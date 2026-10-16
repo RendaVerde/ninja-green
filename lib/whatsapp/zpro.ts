@@ -24,13 +24,31 @@ type ZproPayload = Record<string, unknown> & {
   data?: Record<string, unknown>;
 };
 
-function providerError(payload: ZproPayload, responseStatus: number) {
+function parseRetryAfter(value: string | null) {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds);
+  const date = Date.parse(value);
+  if (Number.isNaN(date)) return undefined;
+  return Math.max(0, Math.ceil((date - Date.now()) / 1000));
+}
+
+function providerError(
+  payload: ZproPayload,
+  responseStatus: number,
+  retryAfterSeconds?: number,
+) {
   const code = typeof payload.error === "string" ? payload.error : "ZPRO_ERROR";
   const message =
     typeof payload.message === "string"
       ? payload.message
       : "A ZPRO recusou a solicitação.";
-  return new WhatsAppProviderError(message, code, responseStatus || 502);
+  return new WhatsAppProviderError(
+    message,
+    responseStatus === 429 ? "ZPRO_RATE_LIMITED" : code,
+    responseStatus || 502,
+    retryAfterSeconds,
+  );
 }
 
 export class ZproWhatsAppProvider implements WhatsAppProvider {
@@ -98,7 +116,11 @@ export class ZproWhatsAppProvider implements WhatsAppProvider {
         }
       }
       if (!response.ok || payload.success === false) {
-        throw providerError(payload, response.status);
+        throw providerError(
+          payload,
+          response.status,
+          parseRetryAfter(response.headers.get("retry-after")),
+        );
       }
       return payload;
     } catch (error) {

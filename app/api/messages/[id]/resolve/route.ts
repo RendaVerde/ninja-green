@@ -171,6 +171,7 @@ export async function POST(
     status: "queued",
     queue_status: "pending",
     source: message.source,
+    retry_of: message.id,
     priority: message.priority,
     scheduled_at: now,
     confirmed_at: now,
@@ -195,5 +196,9 @@ export async function POST(
   after(async () => {
     await dispatchOutboundBatch({ ownerId: user.id });
   });
-  return NextResponse.json({ ok: true, messageId: newMessageId });
+  return NextResponse.json({
+    ok: true,
+    messageId: newMessageId,
+    warning: "A mensagem original pode ter sido entregue; este reenvio usa uma nova chave.",
+  });
 }
